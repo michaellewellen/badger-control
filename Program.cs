@@ -1,0 +1,100 @@
+using System.ComponentModel;
+using NetRts.Bots;
+using NetRts.Protocol;
+
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddSingleton<SettingsStore>();
+
+var app = builder.Build();
+
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
+
+
+app.MapGet("/register", async() =>
+{
+    var key = File.ReadAllText(@"..\NetRTS\badger-bot\apikey-Mike.txt").Trim();
+    using var client = new NetRtsClient(new Uri("https://NetRTS.snowse.io"), key);
+    var me = await client.GetMeAsync();
+    return $"Connected as {me.Name}: {me.Wins} wins, {me.Losses} losses (rating {me.Rating})";
+});
+
+
+
+app.MapGet("/api/settings", (SettingsStore store) => store.Current);
+
+app.MapPost("/api/settings", (BotSettings incoming, SettingsStore store) =>
+{
+    store.Update(incoming.Clamped());
+    return Results.Ok(store.Current);
+});
+
+app.MapPost("/api/join", async (JoinRequest req, SettingsStore store) =>
+{
+    var key = File.ReadAllText(@"..\NetRTS\badger-bot\apikey-Mike.txt").Trim();
+    var client = new NetRtsClient(new Uri("https://NetRTS.snowse.io"), key);
+    
+    MatchSummaryDto match;
+    try
+    {
+        var named = await client.GetMatchByNameAsync(req.MatchName);
+        match = await client.JoinMatchAsync(named.MatchId);
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+
+    var bot = new TunableBot(store);
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            await client.WaitForStartAsync(match.MatchId);   // waits until the admin starts the heats
+            await BotLoop.RunAsync(client, match.MatchId, bot, Console.WriteLine);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("League bot failed: " + ex.Message);
+        }
+    });
+    
+    store.Lock();
+    return Results.Ok(new { matchId = match.MatchId });
+});
+app.MapPost("/api/start", async (StartRequest req, SettingsStore store) =>
+{
+    string[] allowed = ["sitter", "rusher", "balanced", "economist"];
+    var opponent = allowed.Contains(req.Opponent) ? req.Opponent! : "balanced";
+    var key = File.ReadAllText(@"..\NetRTS\badger-bot\apikey-Mike.txt").Trim();
+    var client = new NetRtsClient(new Uri("https://NetRTS.snowse.io"), key);
+
+    var match = await client.CreateMatchAsync(new CreateMatchRequest
+    {
+        MaxPlayers = 2,
+        HouseBots = ["balanced"],
+        Settings = new MatchSettingsDto { TickIntervalMs = 500 }
+    });
+
+    var bot = new TunableBot(store);
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            await BotLoop.RunAsync(client, match.MatchId, bot, Console.WriteLine);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Bot loop failed: " + ex.Message);
+        }
+    });
+
+    return new { matchId = match.MatchId };
+});
+app.Run();
+
+record StartRequest(string? Opponent);
+record JoinRequest(string MatchName);
