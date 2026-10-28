@@ -83,7 +83,7 @@ async function refreshStatus() {
   try {
     const response = await fetch('/api/status');
     const info = await response.json();
-    const where = `<small>page v8 &middot; app #${info.pid} (started ${info.startedAt}) &middot; ` +
+    const where = `<small>page v9 &middot; app #${info.pid} (started ${info.startedAt}) &middot; ` +
       (info.matchId ? `match ${info.matchId.slice(0, 8)}` : 'no match started from this page') + '</small>';
     const s = info.status;
     if (!s) {
@@ -93,13 +93,13 @@ async function refreshStatus() {
     box.innerHTML =
       `Tick <b>${s.tick}</b> &middot; ore <b>${s.ore}</b> (${s.incomePerMinute}/min)<br>` +
       `Workers <b>${s.workers}</b> &middot; troops <b>${s.fighters}</b> &middot; trebuchets <b>${s.trebuchets}</b> &middot; upgrades <b>${s.upgrades}</b><br>` +
-      (s.waveOut ? `<b>Wave out: ${s.waveSize} units</b>` : 'Holding at home') + '<br>' + where;
+      (s.raiders ? `<b>Raiding workers: ${s.raiders} soldiers</b> &middot; ` : '') + (s.waveOut ? `<b>Wave out: ${s.waveSize} units</b>` : 'Holding at home') + '<br>' + where;
     document.getElementById('targets').textContent = s.targets ? 'Targets - ' + s.targets : '';
   } catch (e) { /* the app is restarting; try again next time */ }
 }
 
 document.querySelectorAll('#sides button').forEach(b => b.addEventListener('click', async () => {
-  const r = await fetch('/api/attack?dir=' + b.dataset.dir, { method: 'POST' });
+  const r = await fetch('/api/attack?dir=' + b.dataset.dir + (document.getElementById('raid').checked ? '&raid=true' : ''), { method: 'POST' });
   const j = await r.json();
   if (!j.botRunning) { alert('Attack sent, but NO bot is running in this app. Start or join the match from this page.'); }
 }));
@@ -129,7 +129,7 @@ document.getElementById('join').addEventListener('click', async () => {
 });
 
 document.getElementById('attack').addEventListener('click', async () => {
-  const r = await fetch('/api/attack', { method: 'POST' });
+  const r = await fetch('/api/attack' + (document.getElementById('raid').checked ? '?raid=true' : ''), { method: 'POST' });
   const j = await r.json();
   if (!j.botRunning) { alert('Attack sent, but NO bot is running in this server. Start or join the match from this page (or restart the app after pulling).'); }
 });

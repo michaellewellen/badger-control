@@ -5,6 +5,7 @@ public class BattleControl
     private int _attack;
     private int _recall;
     private string? _direction;
+    private int _raidFlag;
 
     // Which copy of the app this is, and which match its bot is playing (shown on the page to spot mix-ups).
     public int Pid { get; } = Environment.ProcessId;
@@ -12,11 +13,14 @@ public class BattleControl
     public volatile string MatchId = "";
 
     // direction: "left", "center", "right" or null (nearest enemy)
-    public void RequestAttack(string? direction = null)
+    public void RequestAttack(string? direction = null, bool raid = false)
     {
         Volatile.Write(ref _direction, direction);
+        Interlocked.Exchange(ref _raidFlag, raid ? 1 : 0);
         Interlocked.Exchange(ref _attack, 1);
     }
+
+    public bool TakeRaid() => Interlocked.Exchange(ref _raidFlag, 0) == 1;
 
     public string? TakeDirection() => Interlocked.Exchange(ref _direction, null);
     public void RequestRecall() => Interlocked.Exchange(ref _recall, 1);
@@ -39,4 +43,5 @@ public record BattleStatus(
     int Upgrades,
     bool WaveOut,
     int WaveSize,
-    string Targets);
+    string Targets,
+    int Raiders);

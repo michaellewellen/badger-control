@@ -31,10 +31,10 @@ app.MapGet("/register", async() =>
 
 app.MapGet("/api/settings", (SettingsStore store) => store.Current);
 
-app.MapPost("/api/attack", (string? dir, BattleControl control) =>
+app.MapPost("/api/attack", (string? dir, bool? raid, BattleControl control) =>
 {
-    control.RequestAttack(dir is "left" or "center" or "right" ? dir : null);
-    Console.WriteLine($"ATTACK button pressed, direction {dir ?? "nearest"} (bot status: {(control.Status is { } st ? "running at tick " + st.Tick : "NO BOT RUNNING IN THIS SERVER")})");
+    control.RequestAttack(dir is "left" or "center" or "right" ? dir : null, raid == true);
+    Console.WriteLine($"ATTACK button pressed, direction {dir ?? "nearest"}{(raid == true ? ", RAID workers" : "")} (bot status: {(control.Status is { } st ? "running at tick " + st.Tick : "NO BOT RUNNING IN THIS SERVER")})");
     return Results.Ok(new { botRunning = control.Status is not null, tick = control.Status?.Tick });
 });
 
