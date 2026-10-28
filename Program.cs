@@ -6,6 +6,7 @@ using NetRts.Protocol;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton<SettingsStore>();
+builder.Services.AddSingleton<BattleControl>();
 
 var app = builder.Build();
 
@@ -26,13 +27,27 @@ app.MapGet("/register", async() =>
 
 app.MapGet("/api/settings", (SettingsStore store) => store.Current);
 
+app.MapPost("/api/attack", (BattleControl control) =>
+{
+    control.RequestAttack();
+    return Results.Ok();
+});
+
+app.MapPost("/api/recall", (BattleControl control) =>
+{
+    control.RequestRecall();
+    return Results.Ok();
+});
+
+app.MapGet("/api/status", (BattleControl control) => control.Status is { } s ? Results.Ok(s) : Results.NoContent());
+
 app.MapPost("/api/settings", (BotSettings incoming, SettingsStore store) =>
 {
     store.Update(incoming.Clamped());
     return Results.Ok(store.Current);
 });
 
-app.MapPost("/api/join", async (JoinRequest req, SettingsStore store) =>
+app.MapPost("/api/join", async (JoinRequest req, SettingsStore store, BattleControl control) =>
 {
     var key = File.ReadAllText(@"..\NetRTS\badger-bot\apikey-Mike.txt").Trim();
     var client = new NetRtsClient(new Uri("https://NetRTS.snowse.io"), key);
@@ -48,7 +63,7 @@ app.MapPost("/api/join", async (JoinRequest req, SettingsStore store) =>
         return Results.BadRequest(new { error = ex.Message });
     }
 
-    var bot = new TunableBot(store);
+    var bot = new TunableBot(store, control);
     _ = Task.Run(async () =>
     {
         try
@@ -65,7 +80,7 @@ app.MapPost("/api/join", async (JoinRequest req, SettingsStore store) =>
     store.Lock();
     return Results.Ok(new { matchId = match.MatchId });
 });
-app.MapPost("/api/start", async (StartRequest req, SettingsStore store) =>
+app.MapPost("/api/start", async (StartRequest req, SettingsStore store, BattleControl control) =>
 {
     string[] allowed = ["sitter", "rusher", "balanced", "economist"];
     var opponent = allowed.Contains(req.Opponent) ? req.Opponent! : "balanced";
@@ -75,11 +90,11 @@ app.MapPost("/api/start", async (StartRequest req, SettingsStore store) =>
     var match = await client.CreateMatchAsync(new CreateMatchRequest
     {
         MaxPlayers = 2,
-        HouseBots = ["balanced"],
+        HouseBots = [opponent],
         Settings = new MatchSettingsDto { TickIntervalMs = 500 }
     });
 
-    var bot = new TunableBot(store);
+    var bot = new TunableBot(store, control);
     _ = Task.Run(async () =>
     {
         try

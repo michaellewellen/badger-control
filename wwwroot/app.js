@@ -1,28 +1,3 @@
-const sliders = document.querySelectorAll('input[type=range]');
-
-function showValue(el) {
-    document.getElementById(el.id + 'Val').textContent = el.value;
-}
-
-async function load() {
-    const settings = await (await fetch('/api/settings')).json();
-    for (const el of sliders) {
-        el.value = settings[el.CDATA_SECTION_NODE.key];
-        showValue(el);
-    }
-}
-
-async function save() {
-    const bondy = {};
-    for (const el of sliders) {
-        body[el.CDATA_SECTION_NODE.key] = Number(el.value);
-    }
-    await fetch('/api/settings',{
-        method: 'POST',
-        headers: { 'Content-Ty;e' : 'application/json' },
-        body: JSON.stringify(body)
-    });
-}
 const SLIDERS = [
   { section: 'Economy' },
   { key: 'targetWorkers',          label: 'Target workers',                        min: 5,   max: 20 },
@@ -30,6 +5,7 @@ const SLIDERS = [
   { key: 'scoutOreAtTick',         label: 'Scout for ore at tick (0 = never)',     min: 0,   max: 400 },
   { key: 'expandDepot',            label: 'Far depot (0 = off, 1 = on)',           min: 0,   max: 1 },
   { key: 'expandWhenHomeOreBelow', label: 'Far depot when nearby ore left <',      min: 0,   max: 3000 },
+  { key: 'escortSize',             label: 'Soldiers escorting the far-depot crew', min: 0,   max: 12 },
   { key: 'lateWorkers',            label: 'Extra workers later (+N)',              min: 0,   max: 10 },
   { key: 'lateWorkersAtTick',      label: '...starting at tick',                   min: 100, max: 900 },
   { section: 'Production' },
@@ -37,19 +13,21 @@ const SLIDERS = [
   { key: 'firstBarracksAt',        label: '1st Barracks at N workers',             min: 4,   max: 12 },
   { key: 'extraBarracksAt',        label: 'Other planned Barracks at N workers',   min: 6,   max: 18 },
   { key: 'archerPercent',          label: 'Archers (% of army)',                   min: 0,   max: 100 },
+  { key: 'trebuchetPercent',       label: 'Trebuchets (% of army, 0 = none)',      min: 0,   max: 40 },
   { key: 'bankBarracksAt',         label: 'Bonus Barracks when ore ≥ (0 = off)',   min: 0,   max: 1000 },
   { key: 'maxBarracks',            label: 'Max Barracks, planned + bonus',         min: 1,   max: 6 },
   { section: 'Tech' },
-  { key: 'upgradeCount',           label: 'Upgrades (H1, W1, A1, W2, A2)',         min: 0,   max: 5 },
+  { key: 'upgradeCount',           label: 'Upgrades (H1, W1, A1, Siege, W2, A2)',  min: 0,   max: 6 },
   { key: 'techLabAt',              label: 'Tech lab at N workers',                 min: 6,   max: 16 },
+  { key: 'workshopAt',             label: 'Siege workshop at N workers',           min: 8,   max: 18 },
   { section: 'Defense' },
   { key: 'towerCount',             label: 'Home guard towers',                     min: 0,   max: 6 },
   { key: 'towerAt',                label: 'Towers at N workers',                   min: 8,   max: 18 },
   { key: 'farTower',               label: 'Tower at far depot (0/1)',              min: 0,   max: 1 },
   { key: 'defendPercent',          label: 'Garrison kept home (% of army)',        min: 0,   max: 100 },
   { section: 'Offense' },
-  { key: 'attackAtTick',           label: 'Launch at tick (0 = by size only)',     min: 0,   max: 1800 },
-  { key: 'attackThreshold',        label: 'Minimum troops to launch',              min: 1,   max: 100 },
+  { key: 'attackAtTick',           label: 'Auto-attack at tick (0 = my button only)', min: 0, max: 1800 },
+  { key: 'attackThreshold',        label: 'Auto-attack needs N troops',            min: 1,   max: 100 },
   { key: 'raiderScout',            label: 'Rogue scout (0/1)',                     min: 0,   max: 1 },
 ];
 
@@ -99,11 +77,23 @@ async function load() {
   build();
 }
 
+async function refreshStatus() {
+  try {
+    const response = await fetch('/api/status');
+    if (response.status !== 200) { return; }
+    const s = await response.json();
+    document.getElementById('status').innerHTML =
+      `Tick <b>${s.tick}</b> &middot; ore <b>${s.ore}</b> (${s.incomePerMinute}/min)<br>` +
+      `Workers <b>${s.workers}</b> &middot; troops <b>${s.fighters}</b> &middot; trebuchets <b>${s.trebuchets}</b> &middot; upgrades <b>${s.upgrades}</b><br>` +
+      (s.waveOut ? `<b>Wave out: ${s.waveSize} units</b>` : 'Holding at home');
+  } catch (e) { /* the server is restarting; try again next time */ }
+}
+
 document.getElementById('start').addEventListener('click', async () => {
-  const response = await fetch('/api/start', { 
+  const response = await fetch('/api/start', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json'}  ,
-    body: JSON.stringify({ opponent: document.getElementById('opponent').value}),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ opponent: document.getElementById('opponent').value }),
   });
   if (!response.ok) { alert('Could not start a match.'); return; }
   const { matchId } = await response.json();
@@ -123,4 +113,9 @@ document.getElementById('join').addEventListener('click', async () => {
   document.getElementById('game').src = `https://NetRTS.snowse.io/?t=${Date.now()}#/match/${name}`;
 });
 
+document.getElementById('attack').addEventListener('click', () => fetch('/api/attack', { method: 'POST' }));
+document.getElementById('recall').addEventListener('click', () => fetch('/api/recall', { method: 'POST' }));
+
 load();
+refreshStatus();
+setInterval(refreshStatus, 1500);

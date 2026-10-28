@@ -1,18 +1,29 @@
 using NetRts.Bots;
 using NetRts.Protocol;
 
-public class TunableBot(SettingsStore store) : IBotStrategy
+public class TunableBot(SettingsStore store, BattleControl control) : IBotStrategy
 {
     private const int DefenseRadius = 10;
     private const int RetargetEveryTicks = 15;
+    private const int EscortEveryTicks = 3;
     private const int HomeRadius = 12;     // buildings this close to the Command Center are "home"
     private const int TierOneCount = 3;    // Harvesting1, Weapons1, Armor1
+    private const int TierTwoIndex = 4;    // Weapons2 and Armor2 (positions 4 and 5) wait for Barracks #3
+    private const int MinArmyBeforeSiege = 5;   // soldiers/archers we want before spending 350 on a trebuchet
 
     // Research order. The UpgradeCount slider = how many of these we buy.
     private static readonly UpgradeType[] UpgradeOrder =
     [
         UpgradeType.Harvesting1, UpgradeType.Weapons1, UpgradeType.Armor1,
+        UpgradeType.SiegeEngineering,
         UpgradeType.Weapons2, UpgradeType.Armor2,
+    ];
+
+    // Where escorts stand around the trebuchets when a wave rolls out: neighbours two tiles out, then three.
+    private static readonly (int X, int Y)[] EscortRing =
+    [
+        (2, 0), (-2, 0), (0, 2), (0, -2), (2, 2), (-2, -2), (2, -2), (-2, 2),
+        (3, 0), (-3, 0), (0, 3), (0, -3), (3, 3), (-3, -3), (3, -3), (-3, 3),
     ];
 
     // Offsets from our base toward the map centre (sign-adjusted per corner).
@@ -26,8 +37,18 @@ public class TunableBot(SettingsStore store) : IBotStrategy
     private readonly Dictionary<(int X, int Y), (BuildingType Type, int Tick)> _pendingSites = [];
     private readonly Dictionary<int, (int X, int Y)> _knownDeposits = [];
     private readonly Dictionary<BuildingType, int> _peak = [];   // most of each home building type we've had
-    private HashSet<int> _wave = [];
+    private HashSet<int> _wave = [];          // soldiers and archers that have been sent out
+    private HashSet<int> _siegeWave = [];     // our trebuchets that have been sent out
     private int _waveSize;
+
+    // Escort that travels with the workers to a new site
+    private HashSet<int> _escortIds = [];
+    private int _escortSinceTick = -1000;
+    private int _escortWaitSince = -1;
+
+    // Anti-siege
+    private int _lastHuntNote = -1000;
+    private int _lastDodgeNote = -1000;
     private int _lastRetargetTick = -RetargetEveryTicks;
     private int _lastTick = -1;
     private int _lastLoggedEventTick = -1;
@@ -75,6 +96,14 @@ public class TunableBot(SettingsStore store) : IBotStrategy
         var budget = view.State.You.Resources;
         _saving = false;
 
+        // A Build order only charges ore when the builder arrives, so hold that ore back meanwhile
+        // or the army spends it first and the building never starts.
+        foreach (var kv in _pendingSites)
+        {
+            if (view.MyBuildings.Any(b => b.X == kv.Key.X && b.Y == kv.Key.Y)) { continue; }
+            budget -= view.Rules.Buildings.First(b => b.Type == kv.Value.Type).Cost;
+        }
+
         LogEvents(view);
         if (tick % 100 == 0)
         {
@@ -88,7 +117,7 @@ public class TunableBot(SettingsStore store) : IBotStrategy
 
         // Priority order. Each step only spends if nothing above it is waiting for ore.
         TrainWorkers(view, s, commands, ref budget);
-        FollowBuildOrder(view, s, commands, ref budget);   // lost buildings and the TechLab save first
+        FollowBuildOrder(view, s, commands, ref budget);   // lost buildings, the TechLab and the workshop save first
         FinishAbandonedSites(view, commands);
         if (!_saving) { ExpandDepot(view, s, commands, ref budget); }
         if (!_saving) { BuildFarTower(view, s, commands, ref budget); }
@@ -103,12 +132,31 @@ public class TunableBot(SettingsStore store) : IBotStrategy
         }
 
         CommandArmy(view, s, commands);
+        HuntEnemySiege(view, commands);
         RunRaider(view, s, commands);
         RetreatWorkers(view, commands);
         PutIdleWorkersToWork(view, commands);
-        ScoutTour(view, s, commands);   // last on purpose: a later command overrides an earlier one
+        ScoutTour(view, s, commands);
+        DodgeShells(view, commands);   // last on purpose: a later command overrides an earlier one
 
+        PublishStatus(view);
         return commands;
+    }
+
+    // What the page shows next to the Attack button.
+    private void PublishStatus(BotView view)
+    {
+        var you = view.State.You;
+        control.Status = new BattleStatus(
+            Tick: view.State.Tick,
+            Workers: view.Workers.Count,
+            Fighters: view.Army.Count(u => u.Type is UnitType.Soldier or UnitType.Archer),
+            Trebuchets: view.Siege.Count,
+            Ore: you.Resources,
+            IncomePerMinute: you.IncomePerMinute,
+            Upgrades: you.Upgrades.Count,
+            WaveOut: _waveSize > 0,
+            WaveSize: _wave.Count + _siegeWave.Count);
     }
 
     // ---- Logging ----
@@ -235,7 +283,19 @@ public class TunableBot(SettingsStore store) : IBotStrategy
     private void PutIdleWorkersToWork(BotView view, List<CommandRequest> commands)
     {
         var safe = SafeDeposits(view);
-        var usable = safe.Where(kv => !Threatened(view, kv.Value.X, kv.Value.Y)).ToList();
+        var cc = view.CommandCenter!;
+
+        // Far ore is only worth walking to once a finished drop-off stands beside it (or if the depot is
+        // clearly never coming), otherwise every load is carried all the way back home.
+        var depotOverdue = view.State.Tick - _expansionOrderTick > 150;
+        var usable = safe
+            .Where(kv => !Threatened(view, kv.Value.X, kv.Value.Y))
+            .Where(kv => Dist(kv.Value.X, kv.Value.Y, cc.X, cc.Y) <= 9
+                         || depotOverdue
+                         || view.MyBuildings.Any(b => b.Completed
+                                                      && (b.Type == BuildingType.CommandCenter || b.Type == BuildingType.ResourceDepot)
+                                                      && Dist(b.X, b.Y, kv.Value.X, kv.Value.Y) <= 8))
+            .ToList();
         var assigned = view.Workers
             .Where(w => w.TargetId is not null && w.Activity != UnitActivity.Idle)
             .GroupBy(w => w.TargetId!.Value)
@@ -403,7 +463,23 @@ public class TunableBot(SettingsStore store) : IBotStrategy
             return;
         }
 
-        Console.WriteLine($"[tick {tick}] building a depot at far ore near ({cx},{cy}), site {site}, builder {builder.Id}");
+        // The builder doesn't go alone: a few soldiers leave with it (same speed, so they arrive together).
+        var escort = PickEscort(view, s, site.Value);
+        if (escort.Count < s.EscortSize)
+        {
+            _escortWaitSince = _escortWaitSince < 0 ? tick : _escortWaitSince;
+            if (tick - _escortWaitSince < 120)
+            {
+                if (tick % 20 == 0)
+                {
+                    Console.WriteLine($"[tick {tick}] far depot is waiting for an escort ({escort.Count} of {s.EscortSize} soldiers ready)");
+                }
+
+                return;   // wait for the escort, but not forever
+            }
+        }
+
+        Console.WriteLine($"[tick {tick}] building a depot at far ore near ({cx},{cy}), site {site}, builder {builder.Id}, escort {escort.Count}");
         commands.Add(new CommandRequest
         {
             Type = CommandType.Build,
@@ -412,8 +488,39 @@ public class TunableBot(SettingsStore store) : IBotStrategy
             X = site.Value.X,
             Y = site.Value.Y,
         });
+
+        if (escort.Count > 0)
+        {
+            _escortIds = escort.Select(u => u.Id).ToHashSet();
+            _escortSinceTick = tick;
+            commands.Add(new CommandRequest
+            {
+                Type = CommandType.Attack,
+                UnitIds = escort.Select(u => u.Id).ToArray(),
+                X = site.Value.X,
+                Y = site.Value.Y,
+            });
+        }
+
+        _escortWaitSince = -1;
         _expansionOrderTick = tick;
         budget -= cost;
+    }
+
+    // The soldiers (archers if we're short) closest to the site that haven't been sent out to attack.
+    private List<UnitDto> PickEscort(BotView view, BotSettings s, (int X, int Y) site)
+    {
+        if (s.EscortSize == 0)
+        {
+            return [];
+        }
+
+        return view.Army
+            .Where(u => u.Type is UnitType.Soldier or UnitType.Archer && !_wave.Contains(u.Id))
+            .OrderBy(u => u.Type == UnitType.Soldier ? 0 : 1)
+            .ThenBy(u => Dist(u.X, u.Y, site.X, site.Y))
+            .Take(s.EscortSize)
+            .ToList();
     }
 
     // Once the far depot is finished, one Guard Tower goes up beside it, on the enemy side.
@@ -559,6 +666,12 @@ public class TunableBot(SettingsStore store) : IBotStrategy
             steps.Add(new(BuildingType.TechLab, 1, s.TechLabAt));
         }
 
+        // The workshop needs the TechLab and the SiegeEngineering upgrade; until both exist the step is skipped.
+        if (s.TrebuchetPercent > 0 && s.UpgradeCount > Array.IndexOf(UpgradeOrder, UpgradeType.SiegeEngineering))
+        {
+            steps.Add(new(BuildingType.SiegeWorkshop, 1, s.WorkshopAt));
+        }
+
         for (var n = 2; n <= s.BarracksCount; n++)
         {
             steps.Add(new(BuildingType.Barracks, n, s.ExtraBarracksAt));
@@ -575,7 +688,7 @@ public class TunableBot(SettingsStore store) : IBotStrategy
 
     private void FollowBuildOrder(BotView view, BotSettings s, List<CommandRequest> commands, ref int budget)
     {
-        foreach (var site in _pendingSites.Where(kv => view.State.Tick - kv.Value.Tick > 40).Select(kv => kv.Key).ToList())
+        foreach (var site in _pendingSites.Where(kv => view.State.Tick - kv.Value.Tick > 90).Select(kv => kv.Key).ToList())
         {
             _pendingSites.Remove(site);
         }
@@ -605,7 +718,8 @@ public class TunableBot(SettingsStore store) : IBotStrategy
             }
 
             var stats = view.Rules.Buildings.First(b => b.Type == step.Type);
-            var prerequisitesMet = stats.Requires.All(r => view.MyBuildings.Any(b => b.Type == r && b.Completed));
+            var prerequisitesMet = stats.Requires.All(r => view.MyBuildings.Any(b => b.Type == r && b.Completed))
+                                   && (stats.RequiresUpgrade is not { } needed || view.State.You.Upgrades.Contains(needed));
             if (!prerequisitesMet)
             {
                 continue;   // e.g. a tower before its Barracks is done: skip it, let later steps run
@@ -618,8 +732,9 @@ public class TunableBot(SettingsStore store) : IBotStrategy
 
             if (budget < stats.Cost)
             {
-                // Replacing something we lost, or the TechLab: the army waits until we can pay.
-                if (_peak.GetValueOrDefault(step.Type) >= step.Count || step.Type == BuildingType.TechLab)
+                // Replacing something we lost, or the TechLab / siege workshop: the army waits until we can pay.
+                if (_peak.GetValueOrDefault(step.Type) >= step.Count
+                    || step.Type is BuildingType.TechLab or BuildingType.SiegeWorkshop)
                 {
                     _saving = true;
                 }
@@ -676,7 +791,7 @@ public class TunableBot(SettingsStore store) : IBotStrategy
         }
     }
 
-    // ---- Upgrades: Harvest1, Weapons1, Armor1, then (after Barracks #3) Weapons2, Armor2 ----
+    // ---- Upgrades: Harvest1, Weapons1, Armor1, SiegeEngineering, then (after Barracks #3) Weapons2, Armor2 ----
 
     private void Research(BotView view, BotSettings s, List<CommandRequest> commands, ref int budget)
     {
@@ -697,9 +812,14 @@ public class TunableBot(SettingsStore store) : IBotStrategy
                 continue;
             }
 
-            if (i >= TierOneCount && barracksDone < Math.Min(3, s.MaxBarracks))
+            if (upgrade == UpgradeType.SiegeEngineering && s.TrebuchetPercent == 0)
             {
-                return;   // tier 2 waits for the third Barracks
+                continue;   // no trebuchets wanted, so no workshop tech
+            }
+
+            if (i >= TierTwoIndex && barracksDone < Math.Min(3, s.MaxBarracks))
+            {
+                return;   // Weapons2 and Armor2 wait for the third Barracks
             }
 
             var stats = view.Rules.Upgrades.First(u => u.Type == upgrade);
@@ -725,14 +845,37 @@ public class TunableBot(SettingsStore store) : IBotStrategy
 
     // ---- Army ----
 
+    // The army follows a cycle of soldier, soldier, soldier, archer, trebuchet (3:1:1 with the default sliders):
+    // each building makes whichever of its units is furthest behind its share of the army.
     private void TrainArmy(BotView view, BotSettings s, List<CommandRequest> commands, ref int budget)
     {
-        var fighters = view.Army.Where(u => u.Type != UnitType.Scout).ToList();
-        var archers = fighters.Count(u => u.Type == UnitType.Archer)
-                      + view.MyBuildings.Sum(b => b.Production.Count(p => p.UnitType == UnitType.Archer));
+        var fighters = view.Army.Where(u => u.Type is UnitType.Soldier or UnitType.Archer or UnitType.Trebuchet).ToList();
+        var queuedFighters = view.MyBuildings.SelectMany(b => b.Production).ToList();
+        var archers = fighters.Count(u => u.Type == UnitType.Archer) + queuedFighters.Count(p => p.UnitType == UnitType.Archer);
+        var siege = fighters.Count(u => u.Type == UnitType.Trebuchet) + queuedFighters.Count(p => p.UnitType == UnitType.Trebuchet);
         var total = fighters.Count
-                    + view.MyBuildings.Sum(b => b.Production.Count(p => p.UnitType is UnitType.Soldier or UnitType.Archer));
+                    + queuedFighters.Count(p => p.UnitType is UnitType.Soldier or UnitType.Archer or UnitType.Trebuchet);
         var rally = HomeRally(view);
+
+        // Trebuchets come from the workshop, once there is a small army to protect them.
+        var workshop = view.MyBuildings.FirstOrDefault(b => b.Type == BuildingType.SiegeWorkshop && b.Completed && b.Production.Count == 0);
+        if (workshop is not null
+            && s.TrebuchetPercent > 0
+            && total - siege >= MinArmyBeforeSiege
+            && siege < Math.Ceiling(s.TrebuchetPercent * (total + 1) / 100.0))
+        {
+            var siegeCost = view.UnitCost(UnitType.Trebuchet);
+            if (budget < siegeCost)
+            {
+                _saving = true;   // the Barracks wait too, so the ore can pile up
+                return;
+            }
+
+            commands.Add(new CommandRequest { Type = CommandType.Produce, BuildingId = workshop.Id, UnitType = UnitType.Trebuchet, X = rally.X, Y = rally.Y });
+            budget -= siegeCost;
+            siege++;
+            total++;
+        }
 
         foreach (var barracks in view.MyBuildings.Where(b => b.Type == BuildingType.Barracks && b.Completed && b.Production.Count < 2))
         {
@@ -830,44 +973,116 @@ public class TunableBot(SettingsStore store) : IBotStrategy
     private void CommandArmy(BotView view, BotSettings s, List<CommandRequest> commands)
     {
         var tick = view.State.Tick;
-        var army = view.Army.Where(u => u.Type != UnitType.Scout).ToList();   // the raider scout is handled separately
+        var fighters = view.Army.Where(u => u.Type is UnitType.Soldier or UnitType.Archer).ToList();   // the raider scout is separate
+        var siege = view.Siege.ToList();
         var cc = view.CommandCenter!;
 
-        // 1. Forget the dead. Retire the wave once it's mostly gone; survivors become "home" units.
-        _wave.IntersectWith(army.Select(u => u.Id));
+        // 1. Forget the dead. Retire the wave once its fighters are mostly gone; survivors become home units.
+        _wave.IntersectWith(fighters.Select(u => u.Id));
+        _siegeWave.IntersectWith(siege.Select(u => u.Id));
         if (_waveSize > 0 && _wave.Count < Math.Max(2, _waveSize / 3))
         {
             _wave.Clear();
+            _siegeWave.Clear();
             _waveSize = 0;
         }
 
-        // 2. Launch time? Everyone not in the wave except the garrison (the oldest DefendPercent of them) goes.
-        var home = army.Where(u => !_wave.Contains(u.Id)).OrderBy(u => u.Id).ToList();
-        var timeReady = s.AttackAtTick == 0 || tick >= s.AttackAtTick;
-        if (_waveSize == 0 && timeReady && s.AttackThreshold > 0 && home.Count >= s.AttackThreshold)
+        // 2. The buttons. Recall brings everyone home; Attack sends everyone except the garrison.
+        if (control.TakeRecall())
+        {
+            Console.WriteLine($"[tick {tick}] RECALL: wave of {_wave.Count + _siegeWave.Count} coming home");
+            _wave.Clear();
+            _siegeWave.Clear();
+            _waveSize = 0;
+        }
+
+        var home = fighters.Where(u => !_wave.Contains(u.Id)).OrderBy(u => u.Id).ToList();
+        var pressed = control.TakeAttack();
+        var auto = s.AttackAtTick > 0 && tick >= s.AttackAtTick && _waveSize == 0 && home.Count >= s.AttackThreshold;
+        if (pressed || auto)
         {
             var stay = (int)Math.Round(home.Count * s.DefendPercent / 100.0);
-            _wave = home.Skip(stay).Select(u => u.Id).ToHashSet();
-            _waveSize = _wave.Count;
-            _lastRetargetTick = -RetargetEveryTicks;
-            home = home.Take(stay).ToList();
-            if (_waveSize > 0)
+            var goers = home.Skip(stay).ToList();
+            if (goers.Count == 0)
             {
-                Console.WriteLine($"[tick {tick}] launching a wave of {_waveSize}, garrison {stay}");
+                Console.WriteLine($"[tick {tick}] attack ordered, but there are no troops to spare (garrison keeps {stay})");
+            }
+            else
+            {
+                foreach (var u in goers)
+                {
+                    _wave.Add(u.Id);
+                }
+
+                foreach (var t in siege)
+                {
+                    _siegeWave.Add(t.Id);
+                }
+
+                _waveSize = _wave.Count;
+                _lastRetargetTick = -RetargetEveryTicks;
+                home = home.Take(stay).ToList();
+                Console.WriteLine($"[tick {tick}] ATTACK: {_wave.Count} troops and {_siegeWave.Count} trebuchets go out, garrison {stay}");
             }
         }
 
-        // 3. The wave marches.
+        // 3. The wave marches. With trebuchets it rolls as a formation: they attack-move, the escorts ring them.
         if (_wave.Count > 0 && view.AttackTarget() is { } target)
         {
             var retarget = tick - _lastRetargetTick >= RetargetEveryTicks;
-            var ids = army
-                .Where(u => _wave.Contains(u.Id) && (retarget || u.Activity == UnitActivity.Idle))
-                .Select(u => u.Id)
-                .ToArray();
-            if (ids.Length > 0)
+            var escorts = fighters.Where(u => _wave.Contains(u.Id)).ToList();
+            var rolling = siege.Where(t => _siegeWave.Contains(t.Id)).ToList();
+
+            if (rolling.Count == 0)
             {
-                commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = ids, X = target.X, Y = target.Y });
+                var ids = escorts
+                    .Where(u => retarget || u.Activity == UnitActivity.Idle)
+                    .Select(u => u.Id)
+                    .ToArray();
+                if (ids.Length > 0)
+                {
+                    commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = ids, X = target.X, Y = target.Y });
+                }
+            }
+            else
+            {
+                if (retarget || rolling.Any(t => t.Activity == UnitActivity.Idle))
+                {
+                    commands.Add(new CommandRequest
+                    {
+                        Type = CommandType.Attack,
+                        UnitIds = rolling.Select(t => t.Id).ToArray(),
+                        X = target.X,
+                        Y = target.Y,
+                    });
+                }
+
+                if (tick % EscortEveryTicks == 0)
+                {
+                    // The ring is centred a step ahead of the trebuchets, toward the target.
+                    var cx = (int)Math.Round(rolling.Average(t => t.X));
+                    var cy = (int)Math.Round(rolling.Average(t => t.Y));
+                    cx += Math.Sign(target.X - cx);
+                    cy += Math.Sign(target.Y - cy);
+                    for (var i = 0; i < escorts.Count; i++)
+                    {
+                        var escort = escorts[i];
+                        var (dx, dy) = EscortRing[i % EscortRing.Length];
+                        var x = Math.Clamp(cx + dx, 0, view.Map.Width - 1);
+                        var y = Math.Clamp(cy + dy, 0, view.Map.Height - 1);
+
+                        // An escort already fighting near the siege keeps at it; one that wandered off or is idle falls in.
+                        var nearSiege = Dist(escort.X, escort.Y, cx, cy) <= 4;
+                        if ((escort.Activity == UnitActivity.Attacking && nearSiege)
+                            || (escort.Destination is { } d && d.X == x && d.Y == y && escort.Activity != UnitActivity.Idle)
+                            || (escort.Activity == UnitActivity.Idle && escort.X == x && escort.Y == y))
+                        {
+                            continue;
+                        }
+
+                        commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = [escort.Id], X = x, Y = y });
+                    }
+                }
             }
 
             if (retarget)
@@ -876,25 +1091,168 @@ public class TunableBot(SettingsStore store) : IBotStrategy
             }
         }
 
-        // 4. Home units. Once the far depot stands, only the garrison stays home; the rest guard the far field.
+        // 4. The escort that left with the builder stays at the new site until the depot stands (or 400 ticks pass).
+        var farRally = FarRally(view);
+        var escortUnits = new List<UnitDto>();
+        if (_escortIds.Count > 0)
+        {
+            if (farRally is not null || tick - _escortSinceTick > 400)
+            {
+                _escortIds.Clear();   // the depot is up: they join the field group below
+            }
+            else
+            {
+                escortUnits = home.Where(u => _escortIds.Contains(u.Id)).ToList();
+                home = home.Where(u => !_escortIds.Contains(u.Id)).ToList();
+            }
+        }
+
+        if (escortUnits.Count > 0 && FindEscortSite(view) is { } escortSite)
+        {
+            var strays = escortUnits
+                .Where(u => u.Activity == UnitActivity.Idle && Dist(u.X, u.Y, escortSite.X, escortSite.Y) > 3)
+                .Select(u => u.Id)
+                .ToArray();
+            if (strays.Length > 0)
+            {
+                commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = strays, X = escortSite.X, Y = escortSite.Y });
+            }
+        }
+
+        // 5. Home units. Once the far depot stands, only the garrison stays home; the rest guard the far field.
+        //    Trebuchets always stay behind the towers until the Attack button sends them.
         var homeRally = HomeRally(view);
         var homeBuildings = view.MyBuildings.Where(b => Dist(b.X, b.Y, cc.X, cc.Y) <= HomeRadius).ToList();
         var homeThreat = NearestThreat(view, homeBuildings, cc.X, cc.Y);
+        Guard(commands, siege.Where(t => !_siegeWave.Contains(t.Id)).ToList(), homeRally, null);
 
-        if (FarRally(view) is { } farRally)
+        if (farRally is { } far)
         {
             var stay = (int)Math.Round(home.Count * s.DefendPercent / 100.0);
             var garrison = home.Take(stay).ToList();
             var field = home.Skip(stay).ToList();
-            var fieldThreat = NearestThreat(view, view.MyBuildings, farRally.X, farRally.Y);
+            var fieldThreat = NearestThreat(view, view.MyBuildings, far.X, far.Y);
 
             Guard(commands, garrison, homeRally, homeThreat);
-            Guard(commands, field, farRally, fieldThreat);
+            Guard(commands, field, far, fieldThreat);
         }
         else
         {
             Guard(commands, home, homeRally, homeThreat ?? NearestThreat(view, view.MyBuildings, cc.X, cc.Y));
         }
+    }
+
+    // Where the escort is headed: the far depot that is under construction (or a finished one).
+    private (int X, int Y)? FindEscortSite(BotView view)
+    {
+        var cc = view.CommandCenter!;
+        var depot = view.MyBuildings
+            .Where(b => b.Type == BuildingType.ResourceDepot && Dist(b.X, b.Y, cc.X, cc.Y) > HomeRadius)
+            .OrderByDescending(b => b.Id)
+            .FirstOrDefault();
+        return depot is null ? null : (depot.X, depot.Y);
+    }
+
+    // ---- Answering enemy trebuchets ----
+
+    // Enemy shells are visible while they fly: each names the tile it will land on and the tick it lands.
+    // Anything of ours standing on that tile steps aside; buildings can't, but units and workers can.
+    private void DodgeShells(BotView view, List<CommandRequest> commands)
+    {
+        var me = view.State.You.Slot;
+        var tick = view.State.Tick;
+        var incoming = view.State.Shells.Where(sh => sh.Owner != me && sh.LandsTick >= tick).ToList();
+        if (incoming.Count == 0)
+        {
+            return;
+        }
+
+        var tiles = incoming.Select(sh => (sh.X, sh.Y)).ToHashSet();
+        var moved = 0;
+        foreach (var unit in view.MyUnits.Where(u => tiles.Contains((u.X, u.Y))))
+        {
+            (int X, int Y)? step = null;
+            for (var r = 2; r <= 3 && step is null; r++)
+            {
+                for (var dy = -r; dy <= r && step is null; dy++)
+                {
+                    for (var dx = -r; dx <= r && step is null; dx++)
+                    {
+                        var x = unit.X + dx;
+                        var y = unit.Y + dy;
+                        if (Math.Max(Math.Abs(dx), Math.Abs(dy)) == r && view.IsOpen(x, y) && !tiles.Contains((x, y)))
+                        {
+                            step = (x, y);
+                        }
+                    }
+                }
+            }
+
+            if (step is { } spot)
+            {
+                commands.Add(new CommandRequest { Type = CommandType.Move, UnitIds = [unit.Id], X = spot.X, Y = spot.Y });
+                moved++;
+            }
+        }
+
+        if (moved > 0 && tick - _lastDodgeNote >= 10)
+        {
+            _lastDodgeNote = tick;
+            Console.WriteLine($"[tick {tick}] enemy shells incoming: {moved} of our units step off the target tiles");
+        }
+    }
+
+    // A visible enemy trebuchet near our buildings is hunted down: it can't hit anything inside 3 tiles and
+    // it is slow, so our troops run at it. If we only see the shells, we attack-move to where they were fired from.
+    private void HuntEnemySiege(BotView view, List<CommandRequest> commands)
+    {
+        var me = view.State.You.Slot;
+        var tick = view.State.Tick;
+
+        var targets = view.EnemyUnits
+            .Where(e => e.Type == UnitType.Trebuchet)
+            .Where(e => view.MyBuildings.Any(b => Dist(b.X, b.Y, e.X, e.Y) <= 16))
+            .Select(e => (Id: (int?)e.Id, e.X, e.Y))
+            .ToList();
+        if (targets.Count == 0)
+        {
+            // Not visible: find where the shells came from.
+            targets = view.State.Shells
+                .Where(sh => sh.Owner != me && sh.LandsTick >= tick)
+                .Select(sh => (Id: (int?)null, X: sh.FromX, Y: sh.FromY))
+                .Distinct()
+                .ToList();
+        }
+
+        if (targets.Count == 0)
+        {
+            return;
+        }
+
+        var target = targets.OrderBy(t => view.MyBuildings.Min(b => Dist(b.X, b.Y, t.X, t.Y))).First();
+
+        // Enough to beat what guards it: the nearest eight, or the whole home army if it is ringed by soldiers.
+        var guards = view.EnemyUnits.Count(e => e.Type is UnitType.Soldier or UnitType.Archer && Dist(e.X, e.Y, target.X, target.Y) <= 5);
+        var available = view.Army
+            .Where(u => u.Type is UnitType.Soldier or UnitType.Archer && !_wave.Contains(u.Id))
+            .OrderBy(u => Dist(u.X, u.Y, target.X, target.Y))
+            .ToList();
+        var hunters = available.Take(guards >= 4 ? available.Count : 8).ToList();
+        if (hunters.Count == 0)
+        {
+            return;
+        }
+
+        if (tick - _lastHuntNote >= 20)
+        {
+            _lastHuntNote = tick;
+            Console.WriteLine($"[tick {tick}] enemy trebuchet at ({target.X},{target.Y}), {guards} guards: sending {hunters.Count} to kill it");
+        }
+
+        var ids = hunters.Select(u => u.Id).ToArray();
+        commands.Add(target.Id is { } id
+            ? new CommandRequest { Type = CommandType.Attack, UnitIds = ids, TargetId = id }
+            : new CommandRequest { Type = CommandType.Attack, UnitIds = ids, X = target.X, Y = target.Y });
     }
 
     // ---- Rogue scout ----

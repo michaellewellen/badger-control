@@ -6,31 +6,41 @@
   <style>
     body { margin: 0; height: 100vh; display: grid; grid-template-columns: 1fr 3fr; font-family: sans-serif; }
     #controls { padding: 1rem; background: #1b2a49; color: white; overflow-y: auto; }
-    label { display: block; margin-bottom: 1.5rem; }
-    input[type=range] { width: 100%; }
-    .value { float: right; font-weight: bold; }
     #game { width: 100%; height: 100%; border: 0; }
-    #controls { overflow-y: auto; }
+    #controls h2 { margin: .8rem 0 .3rem; }
     #controls h3 { margin: 1rem 0 .3rem; font-size: .95rem; }
     #controls .row { margin-bottom: .5rem; }
     #controls input[type=range] { width: 100%; }
+    #controls input[type=text], #controls select { width: 100%; box-sizing: border-box; margin-bottom: .4rem; }
+    #controls button { margin-bottom: .4rem; }
+    #battle { display: flex; gap: .5rem; margin: .8rem 0 .3rem; }
+    #attack { flex: 3; padding: .9rem; font-size: 1.2rem; font-weight: bold; background: #c0392b; color: white; border: 0; border-radius: 6px; cursor: pointer; }
+    #recall { flex: 1; padding: .9rem; background: #4a5d82; color: white; border: 0; border-radius: 6px; cursor: pointer; }
+    #status { font-size: .85rem; line-height: 1.4; background: #12203b; padding: .5rem; border-radius: 6px; min-height: 3.2rem; }
   </style>
 </head>
 <body>
   <div id="controls">
     <select id="opponent">
-        <option value="balanced">Blue Badger (balanced)</option>
-        <option value="rusher">Honey Badger (rusher)</option>
-        <option value="economist">Grub Hoarder (economist)</option>
-        <option value="sitter">Sleepy Sitter (sitter)</option>
+      <option value="balanced">Blue Badger (balanced)</option>
+      <option value="rusher">Honey Badger (rusher)</option>
+      <option value="economist">Grub Hoarder (economist)</option>
+      <option value="sitter">Sleepy Sitter (sitter)</option>
     </select>
     <button id="start">Start new match</button>
-        <input id="matchName" placeholder="league match name">
+    <input type="text" id="matchName" placeholder="league match name">
     <button id="join">Join league match</button>
+
+    <div id="battle">
+      <button id="attack">ATTACK!</button>
+      <button id="recall">Recall</button>
+    </div>
+    <div id="status">No match yet.</div>
+
     <h2>Controls</h2>
     <div id="sliders"></div>
   </div>
-  <iframe id="game" src="https://netrts.snowse.io/#/match/e8d287e6-0f94-4659-9a68-fabe91a357ad"></iframe>
+  <iframe id="game" src="https://netrts.snowse.io/"></iframe>
 
   <script src="app.js"></script>
 </body>
