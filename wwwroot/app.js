@@ -22,6 +22,7 @@ const SLIDERS = [
   { key: 'workshopAt',             label: 'Siege workshop at N workers',           min: 8,   max: 18 },
   { section: 'Defense' },
   { key: 'towerCount',             label: 'Home guard towers',                     min: 0,   max: 6 },
+  { key: 'lateTowerAtTick',        label: 'Towers 4+ wait until tick',             min: 0,   max: 1800 },
   { key: 'towerAt',                label: 'Towers at N workers',                   min: 8,   max: 18 },
   { key: 'farTower',               label: 'Tower at far depot (0/1)',              min: 0,   max: 1 },
   { key: 'defendPercent',          label: 'Garrison kept home (% of army)',        min: 0,   max: 100 },

@@ -846,6 +846,11 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
                 continue;
             }
 
+            if (step.Type == BuildingType.GuardTower && step.Count > 3 && view.State.Tick < s.LateTowerAtTick)
+            {
+                continue;   // towers 4 and later come once the early army is built
+            }
+
             var stats = view.Rules.Buildings.First(b => b.Type == step.Type);
             var prerequisitesMet = stats.Requires.All(r => view.MyBuildings.Any(b => b.Type == r && b.Completed))
                                    && (stats.RequiresUpgrade is not { } needed || view.State.You.Upgrades.Contains(needed));
@@ -1023,6 +1028,114 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             {
                 archers++;
             }
+        }
+    }
+
+    // Defensive posture: we fight where the towers can help and don't chase. When several enemy armies are
+    // around and none has reached our buildings yet, we wait and let them fight each other.
+    private static UnitDto? Engageable(BotView view, UnitDto? threat)
+    {
+        if (threat is null)
+        {
+            return null;
+        }
+
+        var cc = view.CommandCenter!;
+        var anchors = view.MyBuildings
+            .Where(b => b.Completed && b.Type is BuildingType.GuardTower or BuildingType.CommandCenter && Dist(b.X, b.Y, cc.X, cc.Y) <= HomeRadius)
+            .ToList();
+        var nearBuilding = view.MyBuildings
+            .Where(b => Dist(b.X, b.Y, cc.X, cc.Y) <= HomeRadius)
+            .Select(b => Dist(b.X, b.Y, threat.X, threat.Y))
+            .DefaultIfEmpty(99)
+            .Min();
+
+        // Too far from the towers' cover and not touching a building yet: let it come to us.
+        if (anchors.Count > 0 && anchors.Min(a => Dist(a.X, a.Y, threat.X, threat.Y)) > 8 && nearBuilding > 3)
+        {
+            return null;
+        }
+
+        // Two or more enemy owners close by and nobody on our doorstep: stay put while they hit each other.
+        var owners = view.EnemyUnits.Where(e => Dist(e.X, e.Y, cc.X, cc.Y) <= 20).Select(e => e.Owner).Distinct().Count();
+        if (owners >= 2 && nearBuilding > 4)
+        {
+            return null;
+        }
+
+        return threat;
+    }
+
+    private int _lastSiegeMoveTick = -100;
+
+    // Home trebuchets: parked in a loose line just in front of the Command Center (they reach past the towers).
+    // When enemies come, they stand about 5-6 tiles back from the fight, on our side, so the soldiers screen
+    // them and the shells land on the enemies fighting our front line; if the fight reaches them they back up.
+    private void PositionHomeSiege(BotView view, List<CommandRequest> commands, List<UnitDto> trebuchets, UnitDto? threat)
+    {
+        if (trebuchets.Count == 0)
+        {
+            return;
+        }
+
+        var tick = view.State.Tick;
+        if (tick - _lastSiegeMoveTick < (threat is null ? 20 : 5))
+        {
+            return;
+        }
+
+        _lastSiegeMoveTick = tick;
+        var cc = view.CommandCenter!;
+        var enemy = view.EnemyStart(cc.X, cc.Y);
+        double dx = enemy is null ? 1 : enemy.X - cc.X, dy = enemy is null ? 1 : enemy.Y - cc.Y;
+        var dl = Math.Max(1, Math.Sqrt(dx * dx + dy * dy));
+        dx /= dl;
+        dy /= dl;
+
+        double px, py;
+        if (threat is null)
+        {
+            px = cc.X + dx * 2;
+            py = cc.Y + dy * 2;
+        }
+        else
+        {
+            var cluster = view.EnemyUnits.Where(e => Dist(e.X, e.Y, threat.X, threat.Y) <= 6).ToList();
+            double cx = cluster.Average(e => e.X), cy = cluster.Average(e => e.Y);
+            double vx = cc.X - cx, vy = cc.Y - cy;
+            var vl = Math.Sqrt(vx * vx + vy * vy);
+            if (vl < 4)
+            {
+                // the fight is on top of the Command Center: fall back behind it
+                px = cc.X - dx * 3;
+                py = cc.Y - dy * 3;
+            }
+            else
+            {
+                px = cx + vx / vl * 5.5;
+                py = cy + vy / vl * 5.5;
+            }
+        }
+
+        // a loose line across the front, a row further back every five
+        double lx = -dy, ly = dx;
+        for (var i = 0; i < trebuchets.Count; i++)
+        {
+            var across = (i % 5 - 2) * 1.6;
+            var back = i / 5 * 1.6;
+            var spot = OpenNear(view, (int)Math.Round(px + lx * across - dx * back), (int)Math.Round(py + ly * across - dy * back));
+            var t = trebuchets[i];
+            if (Dist(t.X, t.Y, spot.X, spot.Y) <= 1 && t.Activity == UnitActivity.Idle)
+            {
+                continue;   // already in place: leave it idle so it fires
+            }
+
+            if (t.Destination is { } d && Dist(d.X, d.Y, spot.X, spot.Y) <= 1)
+            {
+                continue;
+            }
+
+            commands.Add(new CommandRequest { Type = CommandType.Move, UnitIds = [t.Id], X = spot.X, Y = spot.Y });
         }
     }
 
@@ -1326,8 +1439,9 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         //    Trebuchets always stay behind the towers until the Attack button sends them.
         var homeRally = HomeRally(view);
         var homeBuildings = view.MyBuildings.Where(b => Dist(b.X, b.Y, cc.X, cc.Y) <= HomeRadius).ToList();
-        var homeThreat = NearestThreat(view, homeBuildings, cc.X, cc.Y);
-        Guard(commands, siege.Where(t => !_siegeWave.Contains(t.Id)).ToList(), homeRally, null);
+        var homeThreat = Engageable(view, NearestThreat(view, homeBuildings, cc.X, cc.Y));
+        PositionHomeSiege(view, commands, siege.Where(t => !_siegeWave.Contains(t.Id)).ToList(),
+            NearestThreat(view, homeBuildings, cc.X, cc.Y));
 
         if (farRally is { } far)
         {
@@ -1341,7 +1455,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         }
         else
         {
-            Guard(commands, home, homeRally, homeThreat ?? NearestThreat(view, view.MyBuildings, cc.X, cc.Y));
+            Guard(commands, home, homeRally, homeThreat ?? Engageable(view, NearestThreat(view, view.MyBuildings, cc.X, cc.Y)));
         }
     }
 

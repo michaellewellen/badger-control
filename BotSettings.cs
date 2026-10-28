@@ -13,8 +13,8 @@ public record BotSettings
     public int BarracksCount { get; init; } = 2;              // planned by worker count
     public int FirstBarracksAt { get; init; } = 8;
     public int ExtraBarracksAt { get; init; } = 12;
-    public int ArcherPercent { get; init; } = 20;             // soldier:archer:trebuchet = 3:1:1 by default
-    public int TrebuchetPercent { get; init; } = 20;          // share of the army that is siege (0 = none)
+    public int ArcherPercent { get; init; } = 0;              // none by default: soldiers 3 : trebuchet 1, with towers doing the archers' job
+    public int TrebuchetPercent { get; init; } = 25;          // share of the army that is siege (0 = none)
     public int BankBarracksAt { get; init; } = 500;           // bonus Barracks when ore >= this; 0 = off
     public int MaxBarracks { get; init; } = 4;
 
@@ -24,7 +24,8 @@ public record BotSettings
     public int WorkshopAt { get; init; } = 13;                // siege workshop, once SiegeEngineering is researched
 
     // Defense
-    public int TowerCount { get; init; } = 3;
+    public int TowerCount { get; init; } = 5;
+    public int LateTowerAtTick { get; init; } = 800;          // towers 4 and later wait for this tick so the early army isn't starved
     public int TowerAt { get; init; } = 13;
     public int FarTower { get; init; } = 1;                   // tower beside the far depot
     public int EscortSize { get; init; } = 5;                 // soldiers that walk to a new site with the builder
@@ -55,6 +56,7 @@ public record BotSettings
         TechLabAt = Math.Clamp(TechLabAt, 6, 16),
         WorkshopAt = Math.Clamp(WorkshopAt, 8, 18),
         TowerCount = Math.Clamp(TowerCount, 0, 6),
+        LateTowerAtTick = Math.Clamp(LateTowerAtTick, 0, 1800),
         TowerAt = Math.Clamp(TowerAt, 8, 18),
         FarTower = Math.Clamp(FarTower, 0, 1),
         EscortSize = Math.Clamp(EscortSize, 0, 12),
