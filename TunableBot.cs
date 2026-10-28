@@ -1218,9 +1218,12 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         }
     }
 
-    // Worker raid: fight any defenders that come close, otherwise hunt visible workers. With nothing to kill in
-    // sight, walk a ring around the enemy start (Move orders never attack, and the ring tiles have no building
-    // within 2 tiles), so buildings - above all the Command Center - are not touched.
+    // Worker raid. Only a small squad (RaidSquad soldiers) hunts at a time, each ordered at a specific worker, so a few
+    // soldiers at most are ever left idle beside a building. The rest wait on a ring 4 tiles from the enemy start, where
+    // no building is in reach (Move orders never attack). Defenders close by are fought by everyone. If the enemy
+    // Command Center is badly hurt, or no workers show up for a while, the raiders pull back out of tower range.
+    private const int RaidSquad = 8;
+
     private void RunRaid(BotView view, List<UnitDto> raiders, List<CommandRequest> commands)
     {
         var tick = view.State.Tick;
@@ -1232,15 +1235,31 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             return;
         }
 
-        if (tick % 2 != 0)
-        {
-            return;
-        }
-
-        var ids = raiders.Select(r => r.Id).ToArray();
         double mx = raiders.Average(r => r.X), my = raiders.Average(r => r.Y);
         var theirs = view.EnemyUnits.Where(e => e.Owner == _raidSlot).ToList();
 
+        void MoveTo((int X, int Y) spot, IEnumerable<UnitDto> units)
+        {
+            var movers = units
+                .Where(r => !(r.Destination is { } d && d.X == spot.X && d.Y == spot.Y))
+                .Where(r => !(r.Activity == UnitActivity.Idle && Dist(r.X, r.Y, spot.X, spot.Y) <= 1))
+                .Select(r => r.Id)
+                .ToArray();
+            if (movers.Length > 0)
+            {
+                commands.Add(new CommandRequest { Type = CommandType.Move, UnitIds = movers, X = spot.X, Y = spot.Y });
+            }
+        }
+
+        (int X, int Y) Stage()
+        {
+            var cc = view.CommandCenter!;
+            double bx = cc.X - player.StartPosition.X, by = cc.Y - player.StartPosition.Y;
+            var bl = Math.Max(1, Math.Sqrt(bx * bx + by * by));
+            return OpenNear(view, (int)Math.Round(player.StartPosition.X + bx / bl * 13), (int)Math.Round(player.StartPosition.Y + by / bl * 13));
+        }
+
+        // 1. Defenders near the raiders: everybody fights, one named target at a time.
         var defender = theirs
             .Where(e => e.Type is UnitType.Soldier or UnitType.Archer or UnitType.Trebuchet or UnitType.Scout
                         && raiders.Any(r => Dist(r.X, r.Y, e.X, e.Y) <= 8))
@@ -1248,43 +1267,30 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             .FirstOrDefault();
         if (defender is not null)
         {
-            commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = ids, X = defender.X, Y = defender.Y });
+            commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = raiders.Select(r => r.Id).ToArray(), TargetId = defender.Id });
             return;
         }
 
+        // 2. Their Command Center is hurt: leave it alone (you finish it when you choose) and wait out of range.
+        var hq = view.EnemyBuildings.FirstOrDefault(b => b.Owner == _raidSlot && b.Type == BuildingType.CommandCenter);
+        if (hq is not null && hq.Hp * 100 < hq.MaxHp * 45)
+        {
+            if (tick - _lastRaidNote >= 100)
+            {
+                _lastRaidNote = tick;
+                Console.WriteLine($"[tick {tick}] raid holding back: the enemy HQ is at {hq.Hp}/{hq.MaxHp}");
+            }
+
+            MoveTo(Stage(), raiders);
+            return;
+        }
+
+        // 3. Workers: a small squad hunts the nearest one, the rest hold on the ring.
         var worker = theirs
             .Where(e => e.Type == UnitType.Worker)
             .OrderBy(e => Math.Abs(e.X - mx) + Math.Abs(e.Y - my))
             .FirstOrDefault();
-        if (worker is not null)
-        {
-            _raidLastWorkerTick = tick;
-            commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = ids, X = worker.X, Y = worker.Y });
-            return;
-        }
 
-        // No workers for a while: pull back out of the towers' reach and only peek in now and then.
-        var quiet = tick - _raidLastWorkerTick;
-        if (quiet > 60 && (quiet - 60) % 150 >= 30)
-        {
-            var cc = view.CommandCenter!;
-            double bx = cc.X - player.StartPosition.X, by = cc.Y - player.StartPosition.Y;
-            var bl = Math.Max(1, Math.Sqrt(bx * bx + by * by));
-            var stage = OpenNear(view, (int)Math.Round(player.StartPosition.X + bx / bl * 13), (int)Math.Round(player.StartPosition.Y + by / bl * 13));
-            var back = raiders
-                .Where(r => !(r.Destination is { } d0 && d0.X == stage.X && d0.Y == stage.Y))
-                .Where(r => !(r.Activity == UnitActivity.Idle && Dist(r.X, r.Y, stage.X, stage.Y) <= 3))
-                .Select(r => r.Id)
-                .ToArray();
-            if (back.Length > 0)
-            {
-                commands.Add(new CommandRequest { Type = CommandType.Move, UnitIds = back, X = stage.X, Y = stage.Y });
-            }
-
-            return;
-        }
-
-        // nothing to kill in sight: circle the enemy start at 4 tiles, a new spot every 25 ticks
         var ring = new List<(int X, int Y)>();
         for (var a = 0; a < 16; a++)
         {
@@ -1297,25 +1303,44 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             }
         }
 
+        if (worker is not null)
+        {
+            _raidLastWorkerTick = tick;
+            var squad = raiders
+                .OrderBy(r => Math.Abs(r.X - worker.X) + Math.Abs(r.Y - worker.Y))
+                .Take(RaidSquad)
+                .ToList();
+            commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = squad.Select(r => r.Id).ToArray(), TargetId = worker.Id });
+
+            var rest = raiders.Where(r => !squad.Contains(r)).ToList();
+            if (rest.Count > 0 && ring.Count > 0)
+            {
+                var near = ring.OrderBy(t => Math.Abs(t.X - mx) + Math.Abs(t.Y - my)).First();
+                MoveTo(near, rest);
+            }
+
+            return;
+        }
+
+        // 4. No workers in sight for a while: pull back out of the towers' reach and only peek in now and then.
+        var quiet = tick - _raidLastWorkerTick;
+        if (quiet > 60 && (quiet - 60) % 150 >= 30)
+        {
+            MoveTo(Stage(), raiders);
+            return;
+        }
+
+        // 5. Otherwise walk the ring around the enemy start (a new spot every 25 ticks) to spot workers.
         if (ring.Count == 0)
         {
             return;
         }
 
-        // start with the ring tile nearest the raiders so they arrive from our side, then go around
-        var first = ring.Select((p, i) => (p, i)).OrderBy(t => Math.Abs(t.p.X - mx) + Math.Abs(t.p.Y - my)).First().i;
-        var spot = ring[(first + (tick - _raidStartTick(tick)) / 25) % ring.Count];
-        var movers = raiders
-            .Where(r => !(r.Destination is { } d && d.X == spot.X && d.Y == spot.Y))
-            .Where(r => !(r.Activity == UnitActivity.Idle && r.X == spot.X && r.Y == spot.Y))
-            .Select(r => r.Id)
-            .ToArray();
-        if (movers.Length > 0)
-        {
-            commands.Add(new CommandRequest { Type = CommandType.Move, UnitIds = movers, X = spot.X, Y = spot.Y });
-        }
+        var first = ring.Select((p, k) => (p, k)).OrderBy(t => Math.Abs(t.p.X - mx) + Math.Abs(t.p.Y - my)).First().k;
+        MoveTo(ring[(first + (tick - _raidStartTick(tick)) / 25) % ring.Count], raiders);
     }
 
+    private int _lastRaidNote = -1000;
     private int _raidStart = -1;
     private int _raidStartTick(int tick)
     {
@@ -1436,7 +1461,14 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
                            .OrderBy(p => Dist(p.StartPosition.X, p.StartPosition.Y, cc.X, cc.Y)).Select(p => (int?)p.Slot).FirstOrDefault();
             var keep = (int)Math.Round(home.Count * s.DefendPercent / 100.0);
             var raiders = home.Skip(keep).Where(u => u.Type == UnitType.Soldier).ToList();
-            if (slot is null || raiders.Count == 0)
+            if (slot is not null && _raid.Count > 0 && raiders.Count == 0)
+            {
+                // No new soldiers at home, but the raid already out simply moves on to the newly chosen enemy.
+                _raidSlot = slot.Value;
+                _raidLastWorkerTick = tick;
+                Console.WriteLine($"[tick {tick}] RAID: the {_raid.Count} raiders move on to the workers of slot {_raidSlot}");
+            }
+            else if (slot is null || raiders.Count == 0)
             {
                 Console.WriteLine($"[tick {tick}] raid ordered, but there are no soldiers to spare or no enemy left");
             }
