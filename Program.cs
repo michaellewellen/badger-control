@@ -83,14 +83,21 @@ app.MapPost("/api/join", async (JoinRequest req, SettingsStore store, BattleCont
 app.MapPost("/api/start", async (StartRequest req, SettingsStore store, BattleControl control) =>
 {
     string[] allowed = ["sitter", "rusher", "balanced", "economist"];
-    var opponent = allowed.Contains(req.Opponent) ? req.Opponent! : "balanced";
+    // "melee" = three different house bots (4 armies on the map); "brawl" = three rushers; otherwise one opponent.
+    string[] opponents = req.Opponent switch
+    {
+        "melee" => ["rusher", "balanced", "economist"],
+        "brawl" => ["rusher", "rusher", "rusher"],
+        _ when allowed.Contains(req.Opponent) => [req.Opponent!],
+        _ => ["balanced"],
+    };
     var key = File.ReadAllText(@"..\NetRTS\badger-bot\apikey-Mike.txt").Trim();
     var client = new NetRtsClient(new Uri("https://NetRTS.snowse.io"), key);
 
     var match = await client.CreateMatchAsync(new CreateMatchRequest
     {
-        MaxPlayers = 2,
-        HouseBots = [opponent],
+        MaxPlayers = opponents.Length + 1,
+        HouseBots = opponents,
         Settings = new MatchSettingsDto { TickIntervalMs = 500 }
     });
 

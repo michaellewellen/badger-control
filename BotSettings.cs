@@ -5,7 +5,7 @@ public record BotSettings
     public int DepotAtWorkers { get; init; } = 10;            // 0 = never
     public int ScoutOreAtTick { get; init; } = 120;           // 0 = never scout
     public int ExpandDepot { get; init; } = 1;                // 1 = depot at far ore
-    public int ExpandWhenHomeOreBelow { get; init; } = 1000;  // ore left beside our depots; 0 = only when empty
+    public int ExpandWhenHomeOreBelow { get; init; } = 2500;  // ore left beside our depots; 0 = only when empty
     public int LateWorkers { get; init; } = 0;
     public int LateWorkersAtTick { get; init; } = 400;
 

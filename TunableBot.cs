@@ -59,6 +59,8 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
     private int _lastLateTour = -1000;
     private int _waypoint;
     private int _expansionOrderTick = -1000;
+    private (int X, int Y)? _farSite;      // the far depot we've ordered but not yet seen standing
+    private int _farSiteTick;
     private int _farTowerOrderTick = -1000;
     private int _lastDepotNote = -1000;
     private int _lastRetreatNote = -1000;
@@ -102,6 +104,18 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         {
             if (view.MyBuildings.Any(b => b.X == kv.Key.X && b.Y == kv.Key.Y)) { continue; }
             budget -= view.Rules.Buildings.First(b => b.Type == kv.Value.Type).Cost;
+        }
+
+        if (_farSite is { } fs)
+        {
+            if (view.MyBuildings.Any(b => b.X == fs.X && b.Y == fs.Y) || tick - _farSiteTick > 150)
+            {
+                _farSite = null;
+            }
+            else
+            {
+                budget -= view.Rules.Buildings.First(b => b.Type == BuildingType.ResourceDepot).Cost;
+            }
         }
 
         LogEvents(view);
@@ -391,7 +405,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
     private void ExpandDepot(BotView view, BotSettings s, List<CommandRequest> commands, ref int budget)
     {
         var tick = view.State.Tick;
-        if (s.ExpandDepot == 0 || tick < 150 || tick - _expansionOrderTick < 60)
+        if (s.ExpandDepot == 0 || tick < 150 || tick - _expansionOrderTick < 60 || _farSite is not null)
         {
             return;
         }
@@ -504,6 +518,8 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
 
         _escortWaitSince = -1;
         _expansionOrderTick = tick;
+        _farSite = site.Value;
+        _farSiteTick = tick;
         budget -= cost;
     }
 
