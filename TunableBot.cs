@@ -127,6 +127,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
                               $"income/min {view.State.You.IncomePerMinute}, upgrades {view.State.You.Upgrades.Count}, home ore left {homeOre}");
         }
 
+        PublishStatus(view);   // early on purpose: the page shows the bot is alive even if a later step fails
         RememberDeposits(view);
 
         // Priority order. Each step only spends if nothing above it is waiting for ore.
@@ -169,7 +170,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             Ore: you.Resources,
             IncomePerMinute: you.IncomePerMinute,
             Upgrades: you.Upgrades.Count,
-            WaveOut: _waveSize > 0,
+            WaveOut: _wave.Count + _siegeWave.Count > 0,
             WaveSize: _wave.Count + _siegeWave.Count);
     }
 
@@ -996,10 +997,10 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         // 1. Forget the dead. Retire the wave once its fighters are mostly gone; survivors become home units.
         _wave.IntersectWith(fighters.Select(u => u.Id));
         _siegeWave.IntersectWith(siege.Select(u => u.Id));
-        if (_waveSize > 0 && _wave.Count < Math.Max(2, _waveSize / 3))
+        // Trebuchets keep marching even after their escorts die, so the wave only ends when they are gone too.
+        if (_waveSize > 0 && _siegeWave.Count == 0 && _wave.Count < Math.Max(2, _waveSize / 3))
         {
             _wave.Clear();
-            _siegeWave.Clear();
             _waveSize = 0;
         }
 
@@ -1019,7 +1020,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         {
             var stay = (int)Math.Round(home.Count * s.DefendPercent / 100.0);
             var goers = home.Skip(stay).ToList();
-            if (goers.Count == 0)
+            if (goers.Count == 0 && siege.Count == 0)
             {
                 Console.WriteLine($"[tick {tick}] attack ordered, but there are no troops to spare (garrison keeps {stay})");
             }
@@ -1035,7 +1036,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
                     _siegeWave.Add(t.Id);
                 }
 
-                _waveSize = _wave.Count;
+                _waveSize = Math.Max(1, _wave.Count);
                 _lastRetargetTick = -RetargetEveryTicks;
                 home = home.Take(stay).ToList();
                 Console.WriteLine($"[tick {tick}] ATTACK: {_wave.Count} troops and {_siegeWave.Count} trebuchets go out, garrison {stay}");
@@ -1043,7 +1044,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         }
 
         // 3. The wave marches. With trebuchets it rolls as a formation: they attack-move, the escorts ring them.
-        if (_wave.Count > 0 && view.AttackTarget() is { } target)
+        if ((_wave.Count > 0 || _siegeWave.Count > 0) && view.AttackTarget() is { } target)
         {
             var retarget = tick - _lastRetargetTick >= RetargetEveryTicks;
             var escorts = fighters.Where(u => _wave.Contains(u.Id)).ToList();

@@ -30,7 +30,8 @@ app.MapGet("/api/settings", (SettingsStore store) => store.Current);
 app.MapPost("/api/attack", (BattleControl control) =>
 {
     control.RequestAttack();
-    return Results.Ok();
+    Console.WriteLine($"ATTACK button pressed (bot status: {(control.Status is { } st ? "running at tick " + st.Tick : "NO BOT RUNNING IN THIS SERVER")})");
+    return Results.Ok(new { botRunning = control.Status is not null, tick = control.Status?.Tick });
 });
 
 app.MapPost("/api/recall", (BattleControl control) =>

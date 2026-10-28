@@ -80,7 +80,10 @@ async function load() {
 async function refreshStatus() {
   try {
     const response = await fetch('/api/status');
-    if (response.status !== 200) { return; }
+    if (response.status !== 200) {
+      document.getElementById('status').innerHTML = 'No bot is running in this server yet. Use <b>Start new match</b> or <b>Join league match</b> on this page.';
+      return;
+    }
     const s = await response.json();
     document.getElementById('status').innerHTML =
       `Tick <b>${s.tick}</b> &middot; ore <b>${s.ore}</b> (${s.incomePerMinute}/min)<br>` +
@@ -113,7 +116,11 @@ document.getElementById('join').addEventListener('click', async () => {
   document.getElementById('game').src = `https://NetRTS.snowse.io/?t=${Date.now()}#/match/${name}`;
 });
 
-document.getElementById('attack').addEventListener('click', () => fetch('/api/attack', { method: 'POST' }));
+document.getElementById('attack').addEventListener('click', async () => {
+  const r = await fetch('/api/attack', { method: 'POST' });
+  const j = await r.json();
+  if (!j.botRunning) { alert('Attack sent, but NO bot is running in this server. Start or join the match from this page (or restart the app after pulling).'); }
+});
 document.getElementById('recall').addEventListener('click', () => fetch('/api/recall', { method: 'POST' }));
 
 load();
