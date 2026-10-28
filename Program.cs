@@ -34,6 +34,12 @@ app.MapPost("/api/attack", (BattleControl control) =>
     return Results.Ok(new { botRunning = control.Status is not null, tick = control.Status?.Tick });
 });
 
+app.MapPost("/api/serum", async (BattleControl control) =>
+{
+    var (ok, message) = await control.Serum.TakeAsync();
+    return Results.Ok(new { ok, message });
+});
+
 app.MapPost("/api/recall", (BattleControl control) =>
 {
     control.RequestRecall();
@@ -51,13 +57,14 @@ app.MapPost("/api/settings", (BotSettings incoming, SettingsStore store) =>
 app.MapPost("/api/join", async (JoinRequest req, SettingsStore store, BattleControl control) =>
 {
     var key = File.ReadAllText(@"..\NetRTS\badger-bot\apikey-Mike.txt").Trim();
-    var client = new NetRtsClient(new Uri("https://NetRTS.snowse.io"), key);
-    
+    var (client, http) = MakeClient(key, control);
+
     MatchSummaryDto match;
     try
     {
         var named = await client.GetMatchByNameAsync(req.MatchName);
         match = await client.JoinMatchAsync(named.MatchId);
+        control.Serum.Reset(http, match.MatchId);
     }
     catch (Exception ex)
     {
@@ -93,7 +100,7 @@ app.MapPost("/api/start", async (StartRequest req, SettingsStore store, BattleCo
         _ => ["balanced"],
     };
     var key = File.ReadAllText(@"..\NetRTS\badger-bot\apikey-Mike.txt").Trim();
-    var client = new NetRtsClient(new Uri("https://NetRTS.snowse.io"), key);
+    var (client, http) = MakeClient(key, control);
 
     var match = await client.CreateMatchAsync(new CreateMatchRequest
     {
@@ -102,6 +109,7 @@ app.MapPost("/api/start", async (StartRequest req, SettingsStore store, BattleCo
         Settings = new MatchSettingsDto { TickIntervalMs = 500 }
     });
 
+    control.Serum.Reset(http, match.MatchId);
     var bot = new TunableBot(store, control);
     _ = Task.Run(async () =>
     {
@@ -118,6 +126,16 @@ app.MapPost("/api/start", async (StartRequest req, SettingsStore store, BattleCo
     return new { matchId = match.MatchId };
 });
 app.Run();
+
+// A client whose command requests carry the serum header once the SERUM button has been used.
+static (NetRtsClient Client, HttpClient Http) MakeClient(string key, BattleControl control)
+{
+    var http = new HttpClient(new SerumHandler(control.Serum) { InnerHandler = new HttpClientHandler() })
+    {
+        BaseAddress = new Uri("https://NetRTS.snowse.io"),
+    };
+    return (new NetRtsClient(http, key, ownsClient: true), http);
+}
 
 record StartRequest(string? Opponent);
 record JoinRequest(string MatchName);

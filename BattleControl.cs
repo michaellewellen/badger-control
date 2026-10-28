@@ -13,6 +13,7 @@ public class BattleControl
     public bool TakeRecall() => Interlocked.Exchange(ref _recall, 0) == 1;
 
     public volatile BattleStatus? Status;
+    public SerumControl Serum { get; } = new();
 }
 
 public record BattleStatus(

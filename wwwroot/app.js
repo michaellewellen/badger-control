@@ -121,6 +121,15 @@ document.getElementById('attack').addEventListener('click', async () => {
   const j = await r.json();
   if (!j.botRunning) { alert('Attack sent, but NO bot is running in this server. Start or join the match from this page (or restart the app after pulling).'); }
 });
+document.getElementById('serum').addEventListener('click', async () => {
+  const note = document.getElementById('serumNote');
+  note.textContent = 'Taking the serum...';
+  try {
+    const r = await fetch('/api/serum', { method: 'POST' });
+    const j = await r.json();
+    note.textContent = j.message;
+  } catch (e) { note.textContent = 'Serum request failed: ' + e.message; }
+});
 document.getElementById('recall').addEventListener('click', () => fetch('/api/recall', { method: 'POST' }));
 
 load();
