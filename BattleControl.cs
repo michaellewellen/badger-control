@@ -4,8 +4,21 @@ public class BattleControl
 {
     private int _attack;
     private int _recall;
+    private string? _direction;
 
-    public void RequestAttack() => Interlocked.Exchange(ref _attack, 1);
+    // Which copy of the app this is, and which match its bot is playing (shown on the page to spot mix-ups).
+    public int Pid { get; } = Environment.ProcessId;
+    public DateTime StartedAt { get; } = DateTime.Now;
+    public volatile string MatchId = "";
+
+    // direction: "left", "center", "right" or null (nearest enemy)
+    public void RequestAttack(string? direction = null)
+    {
+        Volatile.Write(ref _direction, direction);
+        Interlocked.Exchange(ref _attack, 1);
+    }
+
+    public string? TakeDirection() => Interlocked.Exchange(ref _direction, null);
     public void RequestRecall() => Interlocked.Exchange(ref _recall, 1);
 
     // The bot calls these once per tick; each returns true once per button press.
@@ -25,4 +38,5 @@ public record BattleStatus(
     int IncomePerMinute,
     int Upgrades,
     bool WaveOut,
-    int WaveSize);
+    int WaveSize,
+    string Targets);

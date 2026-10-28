@@ -78,19 +78,30 @@ async function load() {
 }
 
 async function refreshStatus() {
+  const box = document.getElementById('status');
   try {
     const response = await fetch('/api/status');
-    if (response.status !== 200) {
-      document.getElementById('status').innerHTML = 'No bot is running in this server yet. Use <b>Start new match</b> or <b>Join league match</b> on this page.';
+    const info = await response.json();
+    const where = `<small>app #${info.pid} (started ${info.startedAt}) &middot; ` +
+      (info.matchId ? `match ${info.matchId.slice(0, 8)}` : 'no match started from this page') + '</small>';
+    const s = info.status;
+    if (!s) {
+      box.innerHTML = 'No bot is running in this app yet. Use <b>Start new match</b> or <b>Join league match</b> on this page.<br>' + where;
       return;
     }
-    const s = await response.json();
-    document.getElementById('status').innerHTML =
+    box.innerHTML =
       `Tick <b>${s.tick}</b> &middot; ore <b>${s.ore}</b> (${s.incomePerMinute}/min)<br>` +
       `Workers <b>${s.workers}</b> &middot; troops <b>${s.fighters}</b> &middot; trebuchets <b>${s.trebuchets}</b> &middot; upgrades <b>${s.upgrades}</b><br>` +
-      (s.waveOut ? `<b>Wave out: ${s.waveSize} units</b>` : 'Holding at home');
-  } catch (e) { /* the server is restarting; try again next time */ }
+      (s.waveOut ? `<b>Wave out: ${s.waveSize} units</b>` : 'Holding at home') + '<br>' + where;
+    document.getElementById('targets').textContent = s.targets ? 'Targets - ' + s.targets : '';
+  } catch (e) { /* the app is restarting; try again next time */ }
 }
+
+document.querySelectorAll('#sides button').forEach(b => b.addEventListener('click', async () => {
+  const r = await fetch('/api/attack?dir=' + b.dataset.dir, { method: 'POST' });
+  const j = await r.json();
+  if (!j.botRunning) { alert('Attack sent, but NO bot is running in this app. Start or join the match from this page.'); }
+}));
 
 document.getElementById('start').addEventListener('click', async () => {
   const response = await fetch('/api/start', {

@@ -40,6 +40,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
     private HashSet<int> _wave = [];          // soldiers and archers that have been sent out
     private HashSet<int> _siegeWave = [];     // our trebuchets that have been sent out
     private int _waveSize;
+    private int? _targetSlot;   // the enemy chosen with Attack left/center/right; null = nearest
 
     // Escort that travels with the workers to a new site
     private HashSet<int> _escortIds = [];
@@ -197,7 +198,8 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             IncomePerMinute: you.IncomePerMinute,
             Upgrades: you.Upgrades.Count,
             WaveOut: _wave.Count + _siegeWave.Count > 0,
-            WaveSize: _wave.Count + _siegeWave.Count);
+            WaveSize: _wave.Count + _siegeWave.Count,
+            Targets: DescribeSides(view));
     }
 
     // ---- Logging ----
@@ -1099,6 +1101,67 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         }
     }
 
+    // Left / center / right are seen from our base looking toward the middle of the map.
+    private static Dictionary<string, PlayerSummaryDto> ResolveSides(BotView view)
+    {
+        var result = new Dictionary<string, PlayerSummaryDto>();
+        var cc = view.CommandCenter;
+        var me = view.State.You.Slot;
+        var enemies = view.State.Players.Where(p => p.Slot != me && !p.Eliminated).ToList();
+        if (cc is null || enemies.Count == 0)
+        {
+            return result;
+        }
+
+        double ax = view.Map.Width / 2.0 - cc.X, ay = view.Map.Height / 2.0 - cc.Y;
+        var len = Math.Sqrt(ax * ax + ay * ay);
+        if (len < 1) { ax = 1; ay = 0; len = 1; }
+        ax /= len;
+        ay /= len;
+
+        // Positive = to our left (as seen on screen, y grows downward).
+        double Lateral(PlayerSummaryDto p)
+        {
+            double vx = p.StartPosition.X - cc.X, vy = p.StartPosition.Y - cc.Y;
+            var vl = Math.Max(1, Math.Sqrt(vx * vx + vy * vy));
+            return (vx * ay - vy * ax) / vl;
+        }
+
+        result["left"] = enemies.OrderByDescending(Lateral).First();
+        result["right"] = enemies.OrderBy(Lateral).First();
+        result["center"] = enemies.OrderBy(p => Math.Abs(Lateral(p))).First();
+        return result;
+    }
+
+    private static string DescribeSides(BotView view)
+    {
+        var sides = ResolveSides(view);
+        if (sides.Count == 0) { return ""; }
+        return string.Join(" | ", new[] { "left", "center", "right" }.Select(k => $"{k}: {sides[k].Name}"));
+    }
+
+    // The attack goal: the chosen enemy's nearest visible building (else its start), or the nearest enemy.
+    private (int X, int Y)? PickTarget(BotView view)
+    {
+        if (_targetSlot is { } slot)
+        {
+            var player = view.State.Players.FirstOrDefault(p => p.Slot == slot && !p.Eliminated);
+            if (player is not null)
+            {
+                var cc = view.CommandCenter!;
+                var building = view.EnemyBuildings
+                    .Where(b => b.Owner == slot)
+                    .OrderBy(b => Dist(b.X, b.Y, cc.X, cc.Y))
+                    .FirstOrDefault();
+                return building is null ? (player.StartPosition.X, player.StartPosition.Y) : (building.X, building.Y);
+            }
+
+            _targetSlot = null;   // that enemy is out: back to the nearest one
+        }
+
+        return view.AttackTarget();
+    }
+
     private void CommandArmy(BotView view, BotSettings s, List<CommandRequest> commands)
     {
         var tick = view.State.Tick;
@@ -1127,6 +1190,14 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
 
         var home = fighters.Where(u => !_wave.Contains(u.Id)).OrderBy(u => u.Id).ToList();
         var pressed = control.TakeAttack();
+        if (pressed)
+        {
+            var dir = control.TakeDirection();
+            var sides = ResolveSides(view);
+            _targetSlot = dir is not null && sides.TryGetValue(dir, out var chosen) ? chosen.Slot : null;
+            _lastRetargetTick = -RetargetEveryTicks;   // redirect a wave that is already out, right away
+            Console.WriteLine($"[tick {tick}] attack target: {(_targetSlot is { } t ? $"{dir} ({sides[dir!].Name})" : "nearest enemy")}");
+        }
         var auto = s.AttackAtTick > 0 && tick >= s.AttackAtTick && _waveSize == 0 && home.Count >= s.AttackThreshold;
         if (pressed || auto)
         {
@@ -1156,7 +1227,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         }
 
         // 3. The wave marches. With trebuchets it rolls as a formation: they attack-move, the escorts ring them.
-        if ((_wave.Count > 0 || _siegeWave.Count > 0) && view.AttackTarget() is { } target)
+        if ((_wave.Count > 0 || _siegeWave.Count > 0) && PickTarget(view) is { } target)
         {
             var retarget = tick - _lastRetargetTick >= RetargetEveryTicks;
             var escorts = fighters.Where(u => _wave.Contains(u.Id)).ToList();

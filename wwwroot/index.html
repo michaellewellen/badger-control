@@ -15,6 +15,8 @@
     #controls button { margin-bottom: .4rem; }
     #battle { display: flex; gap: .5rem; margin: .8rem 0 .3rem; }
     #attack { flex: 3; padding: .9rem; font-size: 1.2rem; font-weight: bold; background: #c0392b; color: white; border: 0; border-radius: 6px; cursor: pointer; }
+    #sides { display: flex; gap: .4rem; margin-bottom: .3rem; }
+    #sides button { flex: 1; padding: .5rem; background: #a0392b; color: white; border: 0; border-radius: 6px; cursor: pointer; }
     #serum { flex: 2; padding: .9rem; background: #8e44ad; color: white; font-weight: bold; border: 0; border-radius: 6px; cursor: pointer; }
     #serumNote { font-size: .8rem; min-height: 1.1rem; margin-bottom: .3rem; }
     #recall { flex: 1; padding: .9rem; background: #4a5d82; color: white; border: 0; border-radius: 6px; cursor: pointer; }
@@ -40,6 +42,12 @@
       <button id="serum" title="Super soldier serum: once per match, soldiers x2 speed and damage for ~30 ticks">SERUM!</button>
       <button id="recall">Recall</button>
     </div>
+    <div id="sides">
+      <button data-dir="left">&#9664; Left</button>
+      <button data-dir="center">Center</button>
+      <button data-dir="right">Right &#9654;</button>
+    </div>
+    <div id="targets" style="font-size:.8rem;min-height:1rem;margin-bottom:.3rem"></div>
     <div id="serumNote"></div>
     <div id="status">No match yet.</div>
 

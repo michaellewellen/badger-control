@@ -27,10 +27,10 @@ app.MapGet("/register", async() =>
 
 app.MapGet("/api/settings", (SettingsStore store) => store.Current);
 
-app.MapPost("/api/attack", (BattleControl control) =>
+app.MapPost("/api/attack", (string? dir, BattleControl control) =>
 {
-    control.RequestAttack();
-    Console.WriteLine($"ATTACK button pressed (bot status: {(control.Status is { } st ? "running at tick " + st.Tick : "NO BOT RUNNING IN THIS SERVER")})");
+    control.RequestAttack(dir is "left" or "center" or "right" ? dir : null);
+    Console.WriteLine($"ATTACK button pressed, direction {dir ?? "nearest"} (bot status: {(control.Status is { } st ? "running at tick " + st.Tick : "NO BOT RUNNING IN THIS SERVER")})");
     return Results.Ok(new { botRunning = control.Status is not null, tick = control.Status?.Tick });
 });
 
@@ -46,7 +46,14 @@ app.MapPost("/api/recall", (BattleControl control) =>
     return Results.Ok();
 });
 
-app.MapGet("/api/status", (BattleControl control) => control.Status is { } s ? Results.Ok(s) : Results.NoContent());
+app.MapGet("/api/status", (BattleControl control) => Results.Ok(new
+{
+    botRunning = control.Status is not null,
+    pid = control.Pid,
+    startedAt = control.StartedAt.ToString("HH:mm:ss"),
+    matchId = control.MatchId,
+    status = control.Status,
+}));
 
 app.MapPost("/api/settings", (BotSettings incoming, SettingsStore store) =>
 {
@@ -65,6 +72,7 @@ app.MapPost("/api/join", async (JoinRequest req, SettingsStore store, BattleCont
         var named = await client.GetMatchByNameAsync(req.MatchName);
         match = await client.JoinMatchAsync(named.MatchId);
         control.Serum.Reset(http, match.MatchId);
+        control.MatchId = match.MatchId.ToString();
     }
     catch (Exception ex)
     {
@@ -110,6 +118,7 @@ app.MapPost("/api/start", async (StartRequest req, SettingsStore store, BattleCo
     });
 
     control.Serum.Reset(http, match.MatchId);
+    control.MatchId = match.MatchId.ToString();
     var bot = new TunableBot(store, control);
     _ = Task.Run(async () =>
     {
