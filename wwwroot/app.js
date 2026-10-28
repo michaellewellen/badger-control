@@ -83,7 +83,7 @@ async function refreshStatus() {
   try {
     const response = await fetch('/api/status');
     const info = await response.json();
-    const where = `<small>app #${info.pid} (started ${info.startedAt}) &middot; ` +
+    const where = `<small>page v8 &middot; app #${info.pid} (started ${info.startedAt}) &middot; ` +
       (info.matchId ? `match ${info.matchId.slice(0, 8)}` : 'no match started from this page') + '</small>';
     const s = info.status;
     if (!s) {

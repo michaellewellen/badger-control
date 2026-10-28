@@ -11,7 +11,11 @@ builder.Services.AddSingleton<BattleControl>();
 var app = builder.Build();
 
 app.UseDefaultFiles();
-app.UseStaticFiles();
+// Never let the browser reuse an old copy of the page or its script (a stale app.js made the buttons do nothing).
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx => ctx.Context.Response.Headers.CacheControl = "no-store, no-cache",
+});
 
 
 
