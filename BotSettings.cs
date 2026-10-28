@@ -24,7 +24,7 @@ public record BotSettings
     public int WorkshopAt { get; init; } = 13;                // siege workshop, once SiegeEngineering is researched
 
     // Defense
-    public int TowerCount { get; init; } = 2;
+    public int TowerCount { get; init; } = 3;
     public int TowerAt { get; init; } = 13;
     public int FarTower { get; init; } = 1;                   // tower beside the far depot
     public int EscortSize { get; init; } = 5;                 // soldiers that walk to a new site with the builder

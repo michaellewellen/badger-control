@@ -59,6 +59,10 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
     private int _lastLateTour = -1000;
     private int _waypoint;
     private int _expansionOrderTick = -1000;
+    private (int X, int Y)? _escortSite;   // where the current expedition (builder + army) is headed
+    private (int X, int Y)? _farTowerSite;
+    private int _farTowerSiteTick;
+    private int _farBuilderId = -1;
     private (int X, int Y)? _farSite;      // the far depot we've ordered but not yet seen standing
     private int _farSiteTick;
     private int _farTowerOrderTick = -1000;
@@ -98,23 +102,44 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         var budget = view.State.You.Resources;
         _saving = false;
 
+        var reserved = 0;
         // A Build order only charges ore when the builder arrives, so hold that ore back meanwhile
         // or the army spends it first and the building never starts.
         foreach (var kv in _pendingSites)
         {
             if (view.MyBuildings.Any(b => b.X == kv.Key.X && b.Y == kv.Key.Y)) { continue; }
-            budget -= view.Rules.Buildings.First(b => b.Type == kv.Value.Type).Cost;
+            reserved += view.Rules.Buildings.First(b => b.Type == kv.Value.Type).Cost;
+        }
+
+        if (_farTowerSite is { } ft)
+        {
+            if (view.MyBuildings.Any(b => b.X == ft.X && b.Y == ft.Y) || tick - _farTowerSiteTick > 150)
+            {
+                _farTowerSite = null;
+            }
+            else
+            {
+                reserved += view.Rules.Buildings.First(b => b.Type == BuildingType.GuardTower).Cost;
+            }
         }
 
         if (_farSite is { } fs)
         {
-            if (view.MyBuildings.Any(b => b.X == fs.X && b.Y == fs.Y) || tick - _farSiteTick > 150)
+            var started = view.MyBuildings.Any(b => b.X == fs.X && b.Y == fs.Y);
+            if (!started && !view.Workers.Any(w => w.Id == _farBuilderId))
+            {
+                // The builder died on the way: try again soon instead of waiting out the timer.
+                Console.WriteLine($"[tick {tick}] the depot builder was lost before the depot started: sending another");
+                _farSite = null;
+                _expansionOrderTick = tick - 40;
+            }
+            else if (started || tick - _farSiteTick > 150)
             {
                 _farSite = null;
             }
             else
             {
-                budget -= view.Rules.Buildings.First(b => b.Type == BuildingType.ResourceDepot).Cost;
+                reserved += view.Rules.Buildings.First(b => b.Type == BuildingType.ResourceDepot).Cost;
             }
         }
 
@@ -131,7 +156,8 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         RememberDeposits(view);
 
         // Priority order. Each step only spends if nothing above it is waiting for ore.
-        TrainWorkers(view, s, commands, ref budget);
+        TrainWorkers(view, s, commands, ref budget);   // workers are the lifeline: they may use ore held for buildings
+        budget -= reserved;
         FollowBuildOrder(view, s, commands, ref budget);   // lost buildings, the TechLab and the workshop save first
         FinishAbandonedSites(view, commands);
         if (!_saving) { ExpandDepot(view, s, commands, ref budget); }
@@ -508,6 +534,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         {
             _escortIds = escort.Select(u => u.Id).ToHashSet();
             _escortSinceTick = tick;
+            _escortSite = site.Value;
             commands.Add(new CommandRequest
             {
                 Type = CommandType.Attack,
@@ -521,10 +548,11 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         _expansionOrderTick = tick;
         _farSite = site.Value;
         _farSiteTick = tick;
+        _farBuilderId = builder.Id;
         budget -= cost;
     }
 
-    // The soldiers (archers if we're short) closest to the site that haven't been sent out to attack.
+    // Everyone at the current field travels with the builder to the next one; short of EscortSize, the closest others join.
     private List<UnitDto> PickEscort(BotView view, BotSettings s, (int X, int Y) site)
     {
         if (s.EscortSize == 0)
@@ -532,36 +560,40 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             return [];
         }
 
-        return view.Army
+        var candidates = view.Army
             .Where(u => u.Type is UnitType.Soldier or UnitType.Archer && !_wave.Contains(u.Id))
+            .ToList();
+        var old = FarRally(view);
+        var field = old is null
+            ? []
+            : candidates.Where(u => Dist(u.X, u.Y, old.Value.X, old.Value.Y) <= 12).ToList();
+        var rest = candidates
+            .Where(u => !field.Contains(u))
             .OrderBy(u => u.Type == UnitType.Soldier ? 0 : 1)
             .ThenBy(u => Dist(u.X, u.Y, site.X, site.Y))
-            .Take(s.EscortSize)
-            .ToList();
+            .Take(Math.Max(0, s.EscortSize - field.Count));
+        return field.Concat(rest).ToList();
     }
 
     // Once the far depot is finished, one Guard Tower goes up beside it, on the enemy side.
     private void BuildFarTower(BotView view, BotSettings s, List<CommandRequest> commands, ref int budget)
     {
         var tick = view.State.Tick;
-        if (s.FarTower == 0 || tick - _farTowerOrderTick < 60)
+        if (s.FarTower == 0 || tick - _farTowerOrderTick < 30 || _farTowerSite is not null)
         {
             return;
         }
 
         var cc = view.CommandCenter!;
+        // Every far depot (even one still going up) gets its own tower: the first depot without one.
         var depot = view.MyBuildings
-            .Where(b => b.Type == BuildingType.ResourceDepot && b.Completed && Dist(b.X, b.Y, cc.X, cc.Y) > HomeRadius)
+            .Where(b => b.Type == BuildingType.ResourceDepot && Dist(b.X, b.Y, cc.X, cc.Y) > HomeRadius)
+            .Where(d => !view.MyBuildings.Any(t => t.Type == BuildingType.GuardTower && Dist(t.X, t.Y, d.X, d.Y) <= 5))
             .OrderBy(b => b.Id)
             .FirstOrDefault();
         if (depot is null)
         {
             return;
-        }
-
-        if (view.MyBuildings.Any(b => b.Type == BuildingType.GuardTower && Dist(b.X, b.Y, depot.X, depot.Y) <= 8))
-        {
-            return;   // already guarded (finished or under construction)
         }
 
         var cost = view.Rules.Buildings.First(b => b.Type == BuildingType.GuardTower).Cost;
@@ -591,6 +623,8 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             Y = site.Value.Y,
         });
         _farTowerOrderTick = tick;
+        _farTowerSite = site.Value;
+        _farTowerSiteTick = tick;
         budget -= cost;
     }
 
@@ -647,7 +681,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             return;   // finish the normal plan first, respect the cap, one at a time
         }
 
-        var site = view.FindBuildSite(SitePreference.TowardCenter, _pendingSites.Keys);
+        var site = FindHomeSite(view, SitePreference.TowardCenter, BuildingType.Barracks);
         var builder = site is null ? null : view.PickBuilder(site.Value);
         if (site is null || builder is null)
         {
@@ -665,6 +699,82 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         });
         _pendingSites[site.Value] = (BuildingType.Barracks, view.State.Tick);
         budget -= cost;
+    }
+
+    // Home layout: the towers form an arc in front of the Command Center (toward the nearest enemy);
+    // every other building goes behind or beside it, out of the line of fire.
+    private (int X, int Y)? FindHomeSite(BotView view, SitePreference pref, BuildingType type)
+    {
+        var cc = view.CommandCenter!;
+        var enemy = view.EnemyStart(cc.X, cc.Y);
+        if (pref == SitePreference.NearOre || enemy is null)
+        {
+            return view.FindBuildSite(pref, _pendingSites.Keys);
+        }
+
+        double dx = enemy.X - cc.X, dy = enemy.Y - cc.Y;
+        var len = Math.Sqrt(dx * dx + dy * dy);
+        if (len < 1)
+        {
+            return view.FindBuildSite(pref, _pendingSites.Keys);
+        }
+
+        dx /= len;
+        dy /= len;
+        var isTower = type == BuildingType.GuardTower;
+        double ax, ay;
+        if (isTower)
+        {
+            var n = view.MyBuildings.Count(b => b.Type == BuildingType.GuardTower && Dist(b.X, b.Y, cc.X, cc.Y) <= HomeRadius)
+                    + PendingCount(view, BuildingType.GuardTower);
+            double[] angles = [0, -0.8, 0.8, -1.4, 1.4, 0];
+            var a = angles[n % angles.Length];
+            var rx = dx * Math.Cos(a) - dy * Math.Sin(a);
+            var ry = dx * Math.Sin(a) + dy * Math.Cos(a);
+            ax = cc.X + rx * 7;
+            ay = cc.Y + ry * 7;
+        }
+        else
+        {
+            ax = cc.X - dx * 5;
+            ay = cc.Y - dy * 5;
+        }
+
+        (int X, int Y)? best = null;
+        var bestScore = double.MaxValue;
+        for (var y = (int)ay - 6; y <= (int)ay + 6; y++)
+        {
+            for (var x = (int)ax - 6; x <= (int)ax + 6; x++)
+            {
+                if (!view.IsOpen(x, y) || Dist(x, y, cc.X, cc.Y) < 3 || Dist(x, y, cc.X, cc.Y) > 10)
+                {
+                    continue;
+                }
+
+                // behind or level with the Command Center for everything except towers
+                var forward = (x - cc.X) * dx + (y - cc.Y) * dy;
+                if (!isTower && forward > 0.5)
+                {
+                    continue;
+                }
+
+                if (view.State.Buildings.Any(b => Dist(b.X, b.Y, x, y) <= 1)
+                    || _pendingSites.Keys.Any(r => Dist(r.X, r.Y, x, y) <= 1)
+                    || view.State.Resources.Any(r => Dist(r.X, r.Y, x, y) <= 2))
+                {
+                    continue;
+                }
+
+                var score = Math.Sqrt((x - ax) * (x - ax) + (y - ay) * (y - ay));
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    best = (x, y);
+                }
+            }
+        }
+
+        return best ?? view.FindBuildSite(pref, _pendingSites.Keys);
     }
 
     // ---- Build order: the sliders become a list, sorted by "at N workers" ----
@@ -759,7 +869,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
                 return;
             }
 
-            var site = view.FindBuildSite(step.Site, _pendingSites.Keys);
+            var site = FindHomeSite(view, step.Site, step.Type);
             var builder = site is null ? null : view.PickBuilder(site.Value);
             if (site is null || builder is null)
             {
@@ -934,10 +1044,12 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
     private static (int X, int Y)? FarRally(BotView view)
     {
         var cc = view.CommandCenter!;
-        var depot = view.MyBuildings
+        // The field we are working now: the newest finished far depot that still has ore beside it.
+        var far = view.MyBuildings
             .Where(b => b.Type == BuildingType.ResourceDepot && b.Completed && Dist(b.X, b.Y, cc.X, cc.Y) > HomeRadius)
-            .OrderBy(b => b.Id)
-            .FirstOrDefault();
+            .OrderByDescending(b => b.Id)
+            .ToList();
+        var depot = far.FirstOrDefault(d => view.State.Resources.Any(r => Dist(r.X, r.Y, d.X, d.Y) <= 9)) ?? far.FirstOrDefault();
         if (depot is null)
         {
             return null;
@@ -1113,9 +1225,12 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         var escortUnits = new List<UnitDto>();
         if (_escortIds.Count > 0)
         {
-            if (farRally is not null || tick - _escortSinceTick > 400)
+            var arrived = _escortSite is { } es
+                          && view.MyBuildings.Any(b => b.Type == BuildingType.ResourceDepot && b.Completed && Dist(b.X, b.Y, es.X, es.Y) <= 4);
+            if (arrived || tick - _escortSinceTick > 400)
             {
-                _escortIds.Clear();   // the depot is up: they join the field group below
+                _escortIds.Clear();   // their depot stands: they join the field group below
+                _escortSite = null;
             }
             else
             {
@@ -1159,16 +1274,8 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         }
     }
 
-    // Where the escort is headed: the far depot that is under construction (or a finished one).
-    private (int X, int Y)? FindEscortSite(BotView view)
-    {
-        var cc = view.CommandCenter!;
-        var depot = view.MyBuildings
-            .Where(b => b.Type == BuildingType.ResourceDepot && Dist(b.X, b.Y, cc.X, cc.Y) > HomeRadius)
-            .OrderByDescending(b => b.Id)
-            .FirstOrDefault();
-        return depot is null ? null : (depot.X, depot.Y);
-    }
+    // Where the escort is headed: the depot site the expedition was sent to.
+    private (int X, int Y)? FindEscortSite(BotView view) => _escortSite;
 
     // ---- Answering enemy trebuchets ----
 
