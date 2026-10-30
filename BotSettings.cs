@@ -24,10 +24,12 @@ public record BotSettings
     public int WorkshopAt { get; init; } = 13;                // siege workshop, once SiegeEngineering is researched
 
     // Defense
-    public int TowerCount { get; init; } = 5;
+    public int TowerCount { get; init; } = 1;
     public int LateTowerAtTick { get; init; } = 800;          // towers 4 and later wait for this tick so the early army isn't starved
     public int TowerAt { get; init; } = 13;
-    public int FarTower { get; init; } = 1;                   // tower beside the far depot
+    public int Patrol { get; init; } = 1;                      // 1 = the field army circles its workers and hunts enemy workers
+    public int CrewPercent { get; init; } = 50;                // share of the workers that walk out with the army to a new field
+    public int FarTower { get; init; } = 0;                   // tower beside the far depot
     public int EscortSize { get; init; } = 12;                 // soldiers that walk to a new site with the builder
     public int DefendPercent { get; init; } = 16;             // garrison share that never leaves home
 
@@ -59,6 +61,8 @@ public record BotSettings
         LateTowerAtTick = Math.Clamp(LateTowerAtTick, 0, 1800),
         TowerAt = Math.Clamp(TowerAt, 8, 18),
         FarTower = Math.Clamp(FarTower, 0, 1),
+        Patrol = Math.Clamp(Patrol, 0, 1),
+        CrewPercent = Math.Clamp(CrewPercent, 10, 100),
         EscortSize = Math.Clamp(EscortSize, 0, 12),
         DefendPercent = Math.Clamp(DefendPercent, 0, 100),
         AttackAtTick = Math.Clamp(AttackAtTick, 0, 1800),

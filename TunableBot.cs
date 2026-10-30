@@ -67,6 +67,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
     private (int X, int Y)? _farTowerSite;
     private int _farTowerSiteTick;
     private int _farBuilderId = -1;
+    private HashSet<int> _crewIds = [];       // the workers that went to the new field with the army
     private (int X, int Y)? _farSite;      // the far depot we've ordered but not yet seen standing
     private int _farSiteTick;
     private int _farTowerOrderTick = -1000;
@@ -132,10 +133,29 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             var started = view.MyBuildings.Any(b => b.X == fs.X && b.Y == fs.Y);
             if (!started && !view.Workers.Any(w => w.Id == _farBuilderId))
             {
-                // The builder died on the way: try again soon instead of waiting out the timer.
-                Console.WriteLine($"[tick {tick}] the depot builder was lost before the depot started: sending another");
-                _farSite = null;
-                _expansionOrderTick = tick - 40;
+                var next = view.Workers.FirstOrDefault(w => _crewIds.Contains(w.Id));
+                if (next is not null)
+                {
+                    // The builder died on the way, but the crew is still there: one of them builds instead.
+                    Console.WriteLine($"[tick {tick}] the depot builder was lost: crew worker {next.Id} builds the depot");
+                    _farBuilderId = next.Id;
+                    commands.Add(new CommandRequest
+                    {
+                        Type = CommandType.Build,
+                        UnitIds = [next.Id],
+                        BuildingType = BuildingType.ResourceDepot,
+                        X = fs.X,
+                        Y = fs.Y,
+                    });
+                    reserved += view.Rules.Buildings.First(b => b.Type == BuildingType.ResourceDepot).Cost;
+                }
+                else
+                {
+                    // Nobody left: try again soon instead of waiting out the timer.
+                    Console.WriteLine($"[tick {tick}] the depot crew was lost before the depot started: sending another");
+                    _farSite = null;
+                    _expansionOrderTick = tick - 40;
+                }
             }
             else if (started || tick - _farSiteTick > 150)
             {
@@ -504,29 +524,41 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         }
 
         var site = FindSiteNear(view, cx, cy);
-        var builder = site is null ? null : view.PickBuilder(site.Value);
-        if (site is null || builder is null)
+        if (site is null)
         {
             return;
         }
 
-        // The builder doesn't go alone: a few soldiers leave with it (same speed, so they arrive together).
+        // Nobody goes alone. We wait until a full escort is ready, then half of the workers walk out with it.
         var escort = PickEscort(view, s, site.Value);
         if (escort.Count < s.EscortSize)
         {
             _escortWaitSince = _escortWaitSince < 0 ? tick : _escortWaitSince;
-            if (tick - _escortWaitSince < 120)
+            if (tick - _escortWaitSince < 300 || escort.Count < 4)
             {
                 if (tick % 20 == 0)
                 {
-                    Console.WriteLine($"[tick {tick}] far depot is waiting for an escort ({escort.Count} of {s.EscortSize} soldiers ready)");
+                    Console.WriteLine($"[tick {tick}] new field: waiting for an escort ({escort.Count} of {s.EscortSize} soldiers ready)");
                 }
 
-                return;   // wait for the escort, but not forever
+                return;
             }
         }
 
-        Console.WriteLine($"[tick {tick}] building a depot at far ore near ({cx},{cy}), site {site}, builder {builder.Id}, escort {escort.Count}");
+        var available = view.Workers
+            .Where(w => w.Activity is UnitActivity.Gathering or UnitActivity.Moving or UnitActivity.Idle && w.Id != _explorerId)
+            .OrderBy(w => Dist(w.X, w.Y, site.Value.X, site.Value.Y))
+            .ToList();
+        if (available.Count < 2)
+        {
+            return;
+        }
+
+        var crew = available.Take(Math.Max(2, available.Count * s.CrewPercent / 100)).ToList();
+        var builder = crew[0];   // the closest one builds the depot the moment they arrive
+        var deposit = _knownDeposits.OrderBy(kv => Dist(kv.Value.X, kv.Value.Y, site.Value.X, site.Value.Y)).Select(kv => (int?)kv.Key).FirstOrDefault();
+
+        Console.WriteLine($"[tick {tick}] expedition to far ore near ({cx},{cy}): {crew.Count} workers and {escort.Count} soldiers leave together, builder {builder.Id}");
         commands.Add(new CommandRequest
         {
             Type = CommandType.Build,
@@ -535,6 +567,12 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             X = site.Value.X,
             Y = site.Value.Y,
         });
+
+        var miners = crew.Skip(1).Select(w => w.Id).ToArray();
+        if (miners.Length > 0 && deposit is { } depositId)
+        {
+            commands.Add(new CommandRequest { Type = CommandType.Gather, UnitIds = miners, TargetId = depositId });
+        }
 
         if (escort.Count > 0)
         {
@@ -550,6 +588,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             });
         }
 
+        _crewIds = crew.Select(w => w.Id).ToHashSet();
         _escortWaitSince = -1;
         _expansionOrderTick = tick;
         _farSite = site.Value;
@@ -1630,11 +1669,87 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             var fieldThreat = NearestThreat(view, view.MyBuildings, far.X, far.Y);
 
             Guard(commands, garrison, homeRally, homeThreat);
-            Guard(commands, field, far, fieldThreat);
+            if (s.Patrol == 1) { PatrolField(view, commands, field, far, fieldThreat); }
+            else { Guard(commands, field, far, fieldThreat); }
         }
         else
         {
             Guard(commands, home, homeRally, homeThreat ?? Engageable(view, NearestThreat(view, view.MyBuildings, cc.X, cc.Y)));
+        }
+    }
+
+    // The field army doesn't sit beside its workers: it circles them, spread around the ring, to catch anyone else
+    // moving in, and it hunts enemy workers it can see. Real threats near our buildings still get everyone's attention.
+    private int _lastPatrolTick = -100;
+
+    private void PatrolField(BotView view, List<CommandRequest> commands, List<UnitDto> group, (int X, int Y) rally, UnitDto? threat)
+    {
+        if (group.Count == 0)
+        {
+            return;
+        }
+
+        if (threat is not null)
+        {
+            Guard(commands, group, rally, threat);
+            return;
+        }
+
+        var tick = view.State.Tick;
+        var cc = view.CommandCenter!;
+        var depot = view.MyBuildings
+            .Where(b => b.Type == BuildingType.ResourceDepot && b.Completed && Dist(b.X, b.Y, cc.X, cc.Y) > HomeRadius)
+            .OrderByDescending(b => b.Id)
+            .FirstOrDefault();
+        var cx = depot?.X ?? rally.X;
+        var cy = depot?.Y ?? rally.Y;
+
+        // 1. Enemy workers in reach of the field: a third of the army (at least 3) goes after them, a few per worker.
+        var prey = view.EnemyUnits
+            .Where(e => e.Type == UnitType.Worker && Dist(e.X, e.Y, cx, cy) <= 18)
+            .OrderBy(e => Dist(e.X, e.Y, cx, cy))
+            .ToList();
+        var hunters = new HashSet<int>();
+        if (prey.Count > 0)
+        {
+            var hunterCount = Math.Min(group.Count, Math.Max(3, group.Count / 3));
+            var squad = group.OrderBy(u => Dist(u.X, u.Y, prey[0].X, prey[0].Y)).Take(hunterCount).ToList();
+            for (var i = 0; i < squad.Count; i += 4)
+            {
+                var target = prey[i / 4 % prey.Count];
+                var ids = squad.Skip(i).Take(4).Select(u => u.Id).ToArray();
+                commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = ids, TargetId = target.Id });
+                foreach (var id in ids) { hunters.Add(id); }
+            }
+        }
+
+        // 2. Everyone else circles the field: eight sectors around a ring, turning slowly.
+        var rest = group.Where(u => !hunters.Contains(u.Id)).ToList();
+        if (rest.Count == 0)
+        {
+            return;
+        }
+
+        var refresh = tick - _lastPatrolTick >= 30;
+        if (!refresh && !rest.Any(u => u.Activity == UnitActivity.Idle))
+        {
+            return;
+        }
+
+        _lastPatrolTick = tick;
+        var radius = 8 + rest.Count / 20;
+        var turn = tick / 30 * Math.PI / 8;
+        for (var k = 0; k < 8; k++)
+        {
+            var sector = rest.Where((u, i) => i % 8 == k).Select(u => u.Id).ToArray();
+            if (sector.Length == 0)
+            {
+                continue;
+            }
+
+            var ang = k * Math.PI / 4 + turn;
+            var spot = OpenNear(view, (int)Math.Round(cx + Math.Cos(ang) * radius), (int)Math.Round(cy + Math.Sin(ang) * radius));
+            commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = sector, X = spot.X, Y = spot.Y });
         }
     }
 

@@ -5,6 +5,8 @@ const SLIDERS = [
   { key: 'scoutOreAtTick',         label: 'Scout for ore at tick (0 = never)',     min: 0,   max: 400 },
   { key: 'expandDepot',            label: 'Far depot (0 = off, 1 = on)',           min: 0,   max: 1 },
   { key: 'expandWhenHomeOreBelow', label: 'Far depot when nearby ore left <',      min: 0,   max: 3000 },
+  { key: 'patrol',                 label: 'Field army patrols + hunts workers (0/1)', min: 0, max: 1 },
+  { key: 'crewPercent',            label: 'Workers that walk out to a new field (%)', min: 10, max: 100 },
   { key: 'escortSize',             label: 'Soldiers escorting the far-depot crew', min: 0,   max: 12 },
   { key: 'lateWorkers',            label: 'Extra workers later (+N)',              min: 0,   max: 10 },
   { key: 'lateWorkersAtTick',      label: '...starting at tick',                   min: 100, max: 900 },
