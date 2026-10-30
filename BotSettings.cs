@@ -16,6 +16,7 @@ public record BotSettings
     public int ArcherPercent { get; init; } = 0;              // none by default: soldiers 3 : trebuchet 1, with towers doing the archers' job
     public int TrebuchetPercent { get; init; } = 25;          // share of the army that is siege (0 = none)
     public int BankBarracksAt { get; init; } = 500;           // bonus Barracks when ore >= this; 0 = off
+    public int LateBarracksAtTick { get; init; } = 0;         // barracks 5 and 6 wait for this tick, so the early army isn't starved
     public int MaxBarracks { get; init; } = 6;
 
     // Tech: Harvest1, Weapons1, Armor1, SiegeEngineering, Weapons2, Armor2 in that order
@@ -31,6 +32,8 @@ public record BotSettings
     public int PioneerAtWorkers { get; init; } = 10;           // they leave when this many workers exist (5 start, so the next 5 go)
     public int PioneerHold { get; init; } = 1;                 // 1 = hold the co-op's ore from the start (co-op before barracks); 0 = barracks first
     public int PioneerEscort { get; init; } = 4;               // soldiers sent after them once the first Barracks has made this many
+    public int AutoSerum { get; init; } = 1;                   // 1 = the bot takes the serum itself when a big fight starts (once per match)
+    public int AutoSerumEnemies { get; init; } = 10;           // enemy fighters in the fight that trigger it
     public int Patrol { get; init; } = 1;                      // 1 = the field army circles its workers and hunts enemy workers
     public int CrewPercent { get; init; } = 50;                // share of the workers that walk out with the army to a new field
     public int FarTower { get; init; } = 0;                   // tower beside the far depot
@@ -51,13 +54,14 @@ public record BotSettings
         ExpandWhenHomeOreBelow = Math.Clamp(ExpandWhenHomeOreBelow, 0, 3000),
         LateWorkers = Math.Clamp(LateWorkers, 0, 10),
         LateWorkersAtTick = Math.Clamp(LateWorkersAtTick, 100, 900),
-        BarracksCount = Math.Clamp(BarracksCount, 1, 4),
+        BarracksCount = Math.Clamp(BarracksCount, 1, 6),
         FirstBarracksAt = Math.Clamp(FirstBarracksAt, 4, 12),
         ExtraBarracksAt = Math.Clamp(ExtraBarracksAt, 6, 18),
         ArcherPercent = Math.Clamp(ArcherPercent, 0, 100),
         TrebuchetPercent = Math.Clamp(TrebuchetPercent, 0, 40),
         BankBarracksAt = Math.Clamp(BankBarracksAt, 0, 1000),
         MaxBarracks = Math.Clamp(MaxBarracks, 1, 6),
+        LateBarracksAtTick = Math.Clamp(LateBarracksAtTick, 0, 1800),
         UpgradeCount = Math.Clamp(UpgradeCount, 0, 6),
         TechLabAt = Math.Clamp(TechLabAt, 6, 16),
         WorkshopAt = Math.Clamp(WorkshopAt, 8, 18),
@@ -66,6 +70,8 @@ public record BotSettings
         TowerAt = Math.Clamp(TowerAt, 8, 18),
         FarTower = Math.Clamp(FarTower, 0, 1),
         Patrol = Math.Clamp(Patrol, 0, 1),
+        AutoSerum = Math.Clamp(AutoSerum, 0, 1),
+        AutoSerumEnemies = Math.Clamp(AutoSerumEnemies, 4, 40),
         PioneerCount = Math.Clamp(PioneerCount, 0, 10),
         PioneerAtWorkers = Math.Clamp(PioneerAtWorkers, 6, 16),
         PioneerEscort = Math.Clamp(PioneerEscort, 0, 12),

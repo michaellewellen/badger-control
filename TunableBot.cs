@@ -57,6 +57,8 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
     private int _lastTick = -1;
     private int _lastLoggedEventTick = -1;
     private int _explorerId = -1;
+    private int _serumAttempts;
+    private int _serumTick = -100;
     // Early pioneers: the first workers past the starting five walk to the halfway ore and found the first co-op there.
     private HashSet<int> _pioneerIds = [];
     private bool _pioneersDone;
@@ -177,8 +179,11 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         }
 
         LogEvents(view);
+        AutoSerum(view, s);
         if (tick % 100 == 0)
         {
+            var rax = view.MyBuildings.Where(b => b.Type == BuildingType.Barracks && b.Completed).ToList();
+            Console.WriteLine($"[tick {tick}] barracks {rax.Count} built, {rax.Count(b => b.Production.Count == 0)} idle, queue {rax.Sum(b => b.Production.Count)}");
             var cc = view.CommandCenter;
             var homeOre = view.State.Resources.Where(d => Dist(d.X, d.Y, cc.X, cc.Y) <= 9).Sum(d => d.Remaining);
             Console.WriteLine($"[tick {tick}] workers {view.Workers.Count}, army {view.Army.Count}, ore {view.State.You.Resources}, " +
@@ -463,6 +468,50 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         commands.Add(new CommandRequest { Type = CommandType.Move, UnitIds = [explorer.Id], X = x, Y = y });
     }
 
+
+
+    // The serum is once per match, so the bot takes it when a real fight starts: many of our soldiers in
+    // melee range of many enemy fighters. It works the same for an assault on our base and for our own attack.
+    private void AutoSerum(BotView view, BotSettings s)
+    {
+        var tick = view.State.Tick;
+        if (s.AutoSerum == 0 || _serumAttempts >= 3 || tick - _serumTick < 20 || control.Serum.Token is not null)
+        {
+            return;
+        }
+
+        var foes = view.EnemyUnits.Where(e => e.Type != UnitType.Worker).ToList();
+        if (foes.Count < s.AutoSerumEnemies)
+        {
+            return;
+        }
+
+        var engaged = view.Army
+            .Where(u => u.Type == UnitType.Soldier && foes.Any(e => Dist(e.X, e.Y, u.X, u.Y) <= 3))
+            .ToList();
+        if (engaged.Count < 5)
+        {
+            return;
+        }
+
+        var mx = (int)engaged.Average(u => u.X);
+        var my = (int)engaged.Average(u => u.Y);
+        var near = foes.Count(e => Dist(e.X, e.Y, mx, my) <= 9);
+        if (near < s.AutoSerumEnemies)
+        {
+            return;
+        }
+
+        _serumAttempts++;
+        _serumTick = tick;
+        Console.WriteLine($"[tick {tick}] AUTO SERUM: {engaged.Count} of our soldiers are fighting {near} enemy fighters near ({mx},{my})");
+        _ = Task.Run(async () =>
+        {
+            var (ok, message) = await control.Serum.TakeAsync();
+            Console.WriteLine($"[tick {tick}] auto serum: {(ok ? "taken" : "not taken")} - {message}");
+            if (ok) { _serumAttempts = 99; }
+        });
+    }
 
     // ---- Early pioneers ----
 
@@ -1080,6 +1129,11 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             if (have >= step.Count)
             {
                 continue;
+            }
+
+            if (step.Type == BuildingType.Barracks && step.Count > 4 && view.State.Tick < s.LateBarracksAtTick)
+            {
+                continue;   // barracks 5 and 6 come once the early rush is past
             }
 
             if (step.Type == BuildingType.GuardTower && step.Count > 3 && view.State.Tick < s.LateTowerAtTick)
