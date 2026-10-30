@@ -34,6 +34,8 @@ public record BotSettings
     public int PioneerEscort { get; init; } = 4;               // soldiers sent after them once the first Barracks has made this many
     public int AutoSerum { get; init; } = 1;                   // 1 = the bot takes the serum itself when a big fight starts (once per match)
     public int AutoSerumEnemies { get; init; } = 10;           // enemy fighters in the fight that trigger it
+    public int HuntRange { get; init; } = 18;                  // how far from our fields the patrol chases enemy workers
+    public int RazeDepots { get; init; } = 0;                  // 1 = with no workers in sight the hunters knock down enemy co-ops in range
     public int Patrol { get; init; } = 1;                      // 1 = the field army circles its workers and hunts enemy workers
     public int CrewPercent { get; init; } = 50;                // share of the workers that walk out with the army to a new field
     public int FarTower { get; init; } = 0;                   // tower beside the far depot
@@ -70,6 +72,8 @@ public record BotSettings
         TowerAt = Math.Clamp(TowerAt, 8, 18),
         FarTower = Math.Clamp(FarTower, 0, 1),
         Patrol = Math.Clamp(Patrol, 0, 1),
+        HuntRange = Math.Clamp(HuntRange, 8, 40),
+        RazeDepots = Math.Clamp(RazeDepots, 0, 1),
         AutoSerum = Math.Clamp(AutoSerum, 0, 1),
         AutoSerumEnemies = Math.Clamp(AutoSerumEnemies, 4, 40),
         PioneerCount = Math.Clamp(PioneerCount, 0, 10),

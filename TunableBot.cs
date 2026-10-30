@@ -1916,7 +1916,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             var fieldThreat = NearestThreat(view, view.MyBuildings, far.X, far.Y);
 
             Guard(commands, garrison, homeRally, homeThreat);
-            if (s.Patrol == 1) { PatrolField(view, commands, field, far, fieldThreat); }
+            if (s.Patrol == 1) { PatrolField(view, s, commands, field, far, fieldThreat); }
             else { Guard(commands, field, far, fieldThreat); }
         }
         else
@@ -1929,7 +1929,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
     // moving in, and it hunts enemy workers it can see. Real threats near our buildings still get everyone's attention.
     private int _lastPatrolTick = -100;
 
-    private void PatrolField(BotView view, List<CommandRequest> commands, List<UnitDto> group, (int X, int Y) rally, UnitDto? threat)
+    private void PatrolField(BotView view, BotSettings s, List<CommandRequest> commands, List<UnitDto> group, (int X, int Y) rally, UnitDto? threat)
     {
         if (group.Count == 0)
         {
@@ -1951,15 +1951,20 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         var cx = depot?.X ?? rally.X;
         var cy = depot?.Y ?? rally.Y;
 
-        // 1. Enemy workers in reach of the field: a third of the army (at least 3) goes after them, a few per worker.
+        // 1. Enemy workers in reach of any of our fields: a third of the army (at least 3) goes after them, a few per worker.
+        var centres = view.MyBuildings
+            .Where(b => b.Type == BuildingType.ResourceDepot && b.Completed && Dist(b.X, b.Y, cc.X, cc.Y) > HomeRadius)
+            .Select(b => (b.X, b.Y))
+            .Append((cx, cy))
+            .ToList();
         var prey = view.EnemyUnits
-            .Where(e => e.Type == UnitType.Worker && Dist(e.X, e.Y, cx, cy) <= 18)
+            .Where(e => e.Type == UnitType.Worker && centres.Any(c => Dist(e.X, e.Y, c.Item1, c.Item2) <= s.HuntRange))
             .OrderBy(e => Dist(e.X, e.Y, cx, cy))
             .ToList();
         var hunters = new HashSet<int>();
+        var hunterCount = Math.Min(group.Count, Math.Max(3, group.Count / 3));
         if (prey.Count > 0)
         {
-            var hunterCount = Math.Min(group.Count, Math.Max(3, group.Count / 3));
             var squad = group.OrderBy(u => Dist(u.X, u.Y, prey[0].X, prey[0].Y)).Take(hunterCount).ToList();
             for (var i = 0; i < squad.Count; i += 4)
             {
@@ -1967,6 +1972,20 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
                 var ids = squad.Skip(i).Take(4).Select(u => u.Id).ToArray();
                 commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = ids, TargetId = target.Id });
                 foreach (var id in ids) { hunters.Add(id); }
+            }
+        }
+        else if (s.RazeDepots == 1)
+        {
+            // No workers in sight: their co-op is an easy building to knock down, and it makes their trips long.
+            var coop = view.EnemyBuildings
+                .Where(b => b.Type == BuildingType.ResourceDepot && centres.Any(c => Dist(b.X, b.Y, c.Item1, c.Item2) <= s.HuntRange))
+                .OrderBy(b => Dist(b.X, b.Y, cx, cy))
+                .FirstOrDefault();
+            if (coop is not null)
+            {
+                var squad = group.OrderBy(u => Dist(u.X, u.Y, coop.X, coop.Y)).Take(hunterCount).Select(u => u.Id).ToArray();
+                commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = squad, TargetId = coop.Id });
+                foreach (var id in squad) { hunters.Add(id); }
             }
         }
 
