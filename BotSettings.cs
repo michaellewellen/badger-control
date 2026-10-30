@@ -1,22 +1,22 @@
 public record BotSettings
 {
     // Economy
-    public int TargetWorkers { get; init; } = 13;
+    public int TargetWorkers { get; init; } = 30;                 // worker-heavy economy: many workers, several fields, a huge army later
     public int DepotAtWorkers { get; init; } = 10;            // 0 = never
     public int ScoutOreAtTick { get; init; } = 120;           // 0 = never scout
     public int ExpandDepot { get; init; } = 1;                // 1 = depot at far ore
-    public int ExpandWhenHomeOreBelow { get; init; } = 2500;  // ore left beside our depots; 0 = only when empty
+    public int ExpandWhenHomeOreBelow { get; init; } = 3000;  // ore left beside our depots; 0 = only when empty
     public int LateWorkers { get; init; } = 0;
     public int LateWorkersAtTick { get; init; } = 400;
 
     // Production
-    public int BarracksCount { get; init; } = 2;              // planned by worker count
+    public int BarracksCount { get; init; } = 4;              // planned by worker count
     public int FirstBarracksAt { get; init; } = 8;
     public int ExtraBarracksAt { get; init; } = 12;
     public int ArcherPercent { get; init; } = 0;              // none by default: soldiers 3 : trebuchet 1, with towers doing the archers' job
     public int TrebuchetPercent { get; init; } = 25;          // share of the army that is siege (0 = none)
     public int BankBarracksAt { get; init; } = 500;           // bonus Barracks when ore >= this; 0 = off
-    public int MaxBarracks { get; init; } = 4;
+    public int MaxBarracks { get; init; } = 6;
 
     // Tech: Harvest1, Weapons1, Armor1, SiegeEngineering, Weapons2, Armor2 in that order
     public int UpgradeCount { get; init; } = 6;
@@ -28,7 +28,7 @@ public record BotSettings
     public int LateTowerAtTick { get; init; } = 800;          // towers 4 and later wait for this tick so the early army isn't starved
     public int TowerAt { get; init; } = 13;
     public int FarTower { get; init; } = 1;                   // tower beside the far depot
-    public int EscortSize { get; init; } = 5;                 // soldiers that walk to a new site with the builder
+    public int EscortSize { get; init; } = 12;                 // soldiers that walk to a new site with the builder
     public int DefendPercent { get; init; } = 16;             // garrison share that never leaves home
 
     // Offense
@@ -38,7 +38,7 @@ public record BotSettings
 
     public BotSettings Clamped() => this with
     {
-        TargetWorkers = Math.Clamp(TargetWorkers, 5, 20),
+        TargetWorkers = Math.Clamp(TargetWorkers, 5, 40),
         DepotAtWorkers = Math.Clamp(DepotAtWorkers, 0, 18),
         ScoutOreAtTick = Math.Clamp(ScoutOreAtTick, 0, 400),
         ExpandDepot = Math.Clamp(ExpandDepot, 0, 1),

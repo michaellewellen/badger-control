@@ -1,6 +1,6 @@
 const SLIDERS = [
   { section: 'Economy' },
-  { key: 'targetWorkers',          label: 'Target workers',                        min: 5,   max: 20 },
+  { key: 'targetWorkers',          label: 'Target workers',                        min: 5,   max: 40 },
   { key: 'depotAtWorkers',         label: 'Home depot at N workers (0 = never)',   min: 0,   max: 18 },
   { key: 'scoutOreAtTick',         label: 'Scout for ore at tick (0 = never)',     min: 0,   max: 400 },
   { key: 'expandDepot',            label: 'Far depot (0 = off, 1 = on)',           min: 0,   max: 1 },
@@ -83,7 +83,7 @@ async function refreshStatus() {
   try {
     const response = await fetch('/api/status');
     const info = await response.json();
-    const where = `<small>page v9 &middot; app #${info.pid} (started ${info.startedAt}) &middot; ` +
+    const where = `<small>page v10 &middot; app #${info.pid} (started ${info.startedAt}) &middot; ` +
       (info.matchId ? `match ${info.matchId.slice(0, 8)}` : 'no match started from this page') + '</small>';
     const s = info.status;
     if (!s) {
