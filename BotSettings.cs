@@ -27,6 +27,10 @@ public record BotSettings
     public int TowerCount { get; init; } = 1;
     public int LateTowerAtTick { get; init; } = 800;          // towers 4 and later wait for this tick so the early army isn't starved
     public int TowerAt { get; init; } = 13;
+    public int PioneerCount { get; init; } = 5;                // workers that walk out early to find the middle ore (0 = off)
+    public int PioneerAtWorkers { get; init; } = 10;           // they leave when this many workers exist (5 start, so the next 5 go)
+    public int PioneerHold { get; init; } = 1;                 // 1 = hold the co-op's ore from the start (co-op before barracks); 0 = barracks first
+    public int PioneerEscort { get; init; } = 4;               // soldiers sent after them once the first Barracks has made this many
     public int Patrol { get; init; } = 1;                      // 1 = the field army circles its workers and hunts enemy workers
     public int CrewPercent { get; init; } = 50;                // share of the workers that walk out with the army to a new field
     public int FarTower { get; init; } = 0;                   // tower beside the far depot
@@ -62,6 +66,10 @@ public record BotSettings
         TowerAt = Math.Clamp(TowerAt, 8, 18),
         FarTower = Math.Clamp(FarTower, 0, 1),
         Patrol = Math.Clamp(Patrol, 0, 1),
+        PioneerCount = Math.Clamp(PioneerCount, 0, 10),
+        PioneerAtWorkers = Math.Clamp(PioneerAtWorkers, 6, 16),
+        PioneerEscort = Math.Clamp(PioneerEscort, 0, 12),
+        PioneerHold = Math.Clamp(PioneerHold, 0, 1),
         CrewPercent = Math.Clamp(CrewPercent, 10, 100),
         EscortSize = Math.Clamp(EscortSize, 0, 12),
         DefendPercent = Math.Clamp(DefendPercent, 0, 100),

@@ -57,6 +57,15 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
     private int _lastTick = -1;
     private int _lastLoggedEventTick = -1;
     private int _explorerId = -1;
+    // Early pioneers: the first workers past the starting five walk to the halfway ore and found the first co-op there.
+    private HashSet<int> _pioneerIds = [];
+    private bool _pioneersDone;
+    private bool _pioneerEscortPending;
+    private (int X, int Y)? _pioneerSite;
+    private List<(int X, int Y)> _pioneerWaypoints = [];
+    private int _pioneerStep;
+    private int _pioneerStepTick;
+    private int _pioneerSince;
     private int _tourStep;
     private (int X, int Y)[] _tourOffsets = TourOffsets;
     private int _lateTours;
@@ -182,6 +191,8 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         // Priority order. Each step only spends if nothing above it is waiting for ore.
         TrainWorkers(view, s, commands, ref budget);   // workers are the lifeline: they may use ore held for buildings
         budget -= reserved;
+        Pioneers(view, s, commands, ref budget);   // the first co-op goes up at the middle ore, ahead of the first barracks
+        SendPioneerEscort(view, s, commands);
         FollowBuildOrder(view, s, commands, ref budget);   // lost buildings, the TechLab and the workshop save first
         FinishAbandonedSites(view, commands);
         if (!_saving) { ExpandDepot(view, s, commands, ref budget); }
@@ -368,7 +379,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             .GroupBy(w => w.TargetId!.Value)
             .ToDictionary(g => g.Key, g => g.Count());
 
-        foreach (var worker in view.Workers.Where(w => w.Activity == UnitActivity.Idle))
+        foreach (var worker in view.Workers.Where(w => w.Activity == UnitActivity.Idle && !_pioneerIds.Contains(w.Id)))
         {
             if (safe.Count == 0)
             {
@@ -450,6 +461,188 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         _explorerId = explorer.Id;
         Console.WriteLine($"[tick {view.State.Tick}] scouting for ore: worker {explorer.Id} to ({x},{y})");
         commands.Add(new CommandRequest { Type = CommandType.Move, UnitIds = [explorer.Id], X = x, Y = y });
+    }
+
+
+    // ---- Early pioneers ----
+
+    // Worker 6..10 do not mine at home: they walk halfway to the map centre, sweep right then left until they see
+    // ore, and the first co-op is built there. The ore for that co-op is held back so it beats the first barracks.
+    private void Pioneers(BotView view, BotSettings s, List<CommandRequest> commands, ref int budget)
+    {
+        if (s.PioneerCount == 0 || _pioneersDone)
+        {
+            return;
+        }
+
+        var tick = view.State.Tick;
+        var cc = view.CommandCenter!;
+        var cost = view.Rules.Buildings.First(b => b.Type == BuildingType.ResourceDepot).Cost;
+
+        if (_pioneerIds.Count == 0)
+        {
+            if (s.PioneerHold == 1) { budget -= cost; }   // held for the co-op from the start
+            if (view.Workers.Count < s.PioneerAtWorkers || budget + cost < cost)
+            {
+                return;
+            }
+
+            var picks = view.Workers
+                .Where(w => w.Id != _explorerId && w.Carrying == 0)
+                .OrderByDescending(w => w.Id)
+                .Take(s.PioneerCount)
+                .ToList();
+            if (picks.Count < Math.Min(2, s.PioneerCount))
+            {
+                return;
+            }
+
+            _pioneerIds = picks.Select(w => w.Id).ToHashSet();
+            _pioneerSince = tick;
+            _pioneerWaypoints = MakePioneerWaypoints(view, cc.X, cc.Y);
+            _pioneerStep = 0;
+            _pioneerStepTick = tick;
+            Console.WriteLine($"[tick {tick}] pioneers: {picks.Count} workers leave for the middle ore, first stop {_pioneerWaypoints[0]}");
+            commands.Add(new CommandRequest { Type = CommandType.Move, UnitIds = _pioneerIds.ToArray(), X = _pioneerWaypoints[0].X, Y = _pioneerWaypoints[0].Y });
+            return;
+        }
+
+        if (s.PioneerHold == 1) { budget -= cost; }   // keep holding the ore until the co-op is placed
+        var alive = view.Workers.Where(w => _pioneerIds.Contains(w.Id)).ToList();
+        if (alive.Count == 0 || tick - _pioneerSince > 450)
+        {
+            Console.WriteLine($"[tick {tick}] pioneers: {(alive.Count == 0 ? "all lost" : "no ore found in time")}, back to the normal plan");
+            _pioneerIds.Clear();
+            _pioneersDone = true;
+            return;
+        }
+
+        var cx0 = (int)alive.Average(w => w.X);
+        var cy0 = (int)alive.Average(w => w.Y);
+        var far = SafeDeposits(view)
+            .Where(kv => Dist(kv.Value.X, kv.Value.Y, cc.X, cc.Y) > 11)
+            .Where(kv => !Threatened(view, kv.Value.X, kv.Value.Y))
+            .OrderBy(kv => Dist(kv.Value.X, kv.Value.Y, cx0, cy0))
+            .Select(kv => kv.Value)
+            .ToList();
+        if (far.Count > 0)
+        {
+            var seed = far[0];
+            var cluster = far.Where(p => Dist(p.X, p.Y, seed.X, seed.Y) <= 4).ToList();
+            var site = FindSiteNear(view, (int)Math.Round(cluster.Average(p => p.X)), (int)Math.Round(cluster.Average(p => p.Y)));
+            if (site is not null)
+            {
+                var builder = alive.OrderBy(w => Dist(w.X, w.Y, site.Value.X, site.Value.Y)).First();
+                var deposit = _knownDeposits.OrderBy(kv => Dist(kv.Value.X, kv.Value.Y, site.Value.X, site.Value.Y)).Select(kv => (int?)kv.Key).First();
+                Console.WriteLine($"[tick {tick}] pioneers found ore near {seed}: worker {builder.Id} builds the co-op at {site.Value}, {alive.Count - 1} start mining");
+                commands.Add(new CommandRequest { Type = CommandType.Build, UnitIds = [builder.Id], BuildingType = BuildingType.ResourceDepot, X = site.Value.X, Y = site.Value.Y });
+                var miners = alive.Where(w => w.Id != builder.Id).Select(w => w.Id).ToArray();
+                if (miners.Length > 0 && deposit is { } depositId)
+                {
+                    commands.Add(new CommandRequest { Type = CommandType.Gather, UnitIds = miners, TargetId = depositId });
+                }
+
+                _crewIds = alive.Select(w => w.Id).ToHashSet();
+                _farSite = site.Value;
+                _farSiteTick = tick;
+                _farBuilderId = builder.Id;
+                _expansionOrderTick = tick;
+                _pioneerSite = site.Value;
+                _pioneerEscortPending = s.PioneerEscort > 0;
+                _pioneerIds.Clear();
+                _pioneersDone = true;
+                return;
+            }
+        }
+
+        // Nothing seen yet: when the group has arrived (or stalled), walk to the next point of the sweep.
+        var arrived = alive.All(w => w.Activity == UnitActivity.Idle) || tick - _pioneerStepTick > 45;
+        if (arrived)
+        {
+            _pioneerStep++;
+            if (_pioneerStep >= _pioneerWaypoints.Count)
+            {
+                Console.WriteLine($"[tick {tick}] pioneers: swept every point without finding ore, back to the normal plan");
+                _pioneerIds.Clear();
+                _pioneersDone = true;
+                return;
+            }
+
+            _pioneerStepTick = tick;
+            var next = _pioneerWaypoints[_pioneerStep];
+            commands.Add(new CommandRequest { Type = CommandType.Move, UnitIds = alive.Select(w => w.Id).ToArray(), X = next.X, Y = next.Y });
+        }
+    }
+
+    // Halfway to the centre first, then right of the line of travel, then back across and left.
+    private List<(int X, int Y)> MakePioneerWaypoints(BotView view, int ccx, int ccy)
+    {
+        var dx = view.Map.Width / 2 - ccx;
+        var dy = view.Map.Height / 2 - ccy;
+        var len = Math.Max(1.0, Math.Sqrt(dx * dx + dy * dy));
+        var px = -dy / len;   // right-hand side of the direction of travel (y grows downward)
+        var py = dx / len;
+        var hx = ccx + dx / 2.0;
+        var hy = ccy + dy / 2.0;
+        var points = new List<(int X, int Y)>();
+        foreach (var off in new[] { 0, 7, 14, 0, -7, -14, 21, -21 })
+        {
+            var x = Math.Clamp((int)Math.Round(hx + px * off), 1, view.Map.Width - 2);
+            var y = Math.Clamp((int)Math.Round(hy + py * off), 1, view.Map.Height - 2);
+            var spot = NearestOpen(view, x, y);
+            if (spot is not null)
+            {
+                points.Add(spot.Value);
+            }
+        }
+
+        if (points.Count == 0)
+        {
+            points.Add((view.Map.Width / 2, view.Map.Height / 2));
+        }
+
+        return points;
+    }
+
+    private static (int X, int Y)? NearestOpen(BotView view, int x, int y)
+    {
+        for (var r = 0; r <= 4; r++)
+        {
+            for (var ox = -r; ox <= r; ox++)
+            {
+                for (var oy = -r; oy <= r; oy++)
+                {
+                    if (Math.Max(Math.Abs(ox), Math.Abs(oy)) == r && view.IsOpen(x + ox, y + oy))
+                    {
+                        return (x + ox, y + oy);
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    // After the first Barracks has a few soldiers, they walk out to guard the pioneers' co-op.
+    private void SendPioneerEscort(BotView view, BotSettings s, List<CommandRequest> commands)
+    {
+        if (!_pioneerEscortPending || _pioneerSite is not { } site)
+        {
+            return;
+        }
+
+        var soldiers = view.Army.Where(u => u.Type is UnitType.Soldier or UnitType.Archer && !_wave.Contains(u.Id)).ToList();
+        if (soldiers.Count < s.PioneerEscort || _escortIds.Count > 0)
+        {
+            return;
+        }
+
+        _pioneerEscortPending = false;
+        _escortIds = soldiers.Select(u => u.Id).ToHashSet();
+        _escortSinceTick = view.State.Tick;
+        _escortSite = site;
+        Console.WriteLine($"[tick {view.State.Tick}] {soldiers.Count} soldiers leave to guard the pioneers' co-op at {site}");
+        commands.Add(new CommandRequest { Type = CommandType.Attack, UnitIds = soldiers.Select(u => u.Id).ToArray(), X = site.X, Y = site.Y });
     }
 
     // ---- Far-ore depot and tower ----
