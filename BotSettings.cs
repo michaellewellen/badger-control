@@ -14,7 +14,7 @@ public record BotSettings
     public int FirstBarracksAt { get; init; } = 8;
     public int ExtraBarracksAt { get; init; } = 12;
     public int ArcherPercent { get; init; } = 0;              // none by default: soldiers 3 : trebuchet 1, with towers doing the archers' job
-    public int TrebuchetPercent { get; init; } = 25;          // share of the army that is siege (0 = none)
+    public int TrebuchetPercent { get; init; } = 0;           // share of the army that is siege (0 = none)
     public int BankBarracksAt { get; init; } = 500;           // bonus Barracks when ore >= this; 0 = off
     public int LateBarracksAtTick { get; init; } = 0;         // barracks 5 and 6 wait for this tick, so the early army isn't starved
     public int MaxBarracks { get; init; } = 6;
