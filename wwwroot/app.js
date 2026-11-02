@@ -14,6 +14,7 @@ const SLIDERS = [
   { key: 'autoSerumEnemies',       label: 'Enemy fighters in the fight that trigger it', min: 4, max: 40 },
   { key: 'huntRange',              label: 'Patrol chases enemy workers this far from our fields', min: 8, max: 40 },
   { key: 'razeDepots',             label: 'Patrol also knocks down enemy co-ops (0/1)', min: 0, max: 1 },
+  { key: 'keepCoops',              label: 'Always keep a co-op at every field we mine (0/1)', min: 0, max: 1 },
   { key: 'patrol',                 label: 'Field army patrols + hunts workers (0/1)', min: 0, max: 1 },
   { key: 'crewPercent',            label: 'Workers that walk out to a new field (%)', min: 10, max: 100 },
   { key: 'escortSize',             label: 'Soldiers escorting the far-depot crew', min: 0,   max: 12 },

@@ -57,6 +57,8 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
     private int _lastTick = -1;
     private int _lastLoggedEventTick = -1;
     private int _explorerId = -1;
+    private readonly List<(int X, int Y)> _fieldCoops = [];   // every far co-op we have ever finished
+    private int _keeperTick = -100;
     private int _serumAttempts;
     private int _serumTick = -100;
     // Early pioneers: the first workers past the starting five walk to the halfway ore and found the first co-op there.
@@ -198,6 +200,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         budget -= reserved;
         Pioneers(view, s, commands, ref budget);   // the first co-op goes up at the middle ore, ahead of the first barracks
         SendPioneerEscort(view, s, commands);
+        KeepCoopsStanding(view, s, commands, ref budget);
         FollowBuildOrder(view, s, commands, ref budget);   // lost buildings, the TechLab and the workshop save first
         FinishAbandonedSites(view, commands);
         if (!_saving) { ExpandDepot(view, s, commands, ref budget); }
@@ -216,7 +219,7 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         HuntEnemySiege(view, commands);
         RunRaider(view, s, commands);
         RetreatWorkers(view, commands);
-        PutIdleWorkersToWork(view, commands);
+        PutIdleWorkersToWork(view, s, commands);
         ScoutTour(view, s, commands);
         DodgeShells(view, commands);   // last on purpose: a later command overrides an earlier one
 
@@ -363,14 +366,15 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
         commands.Add(new CommandRequest { Type = CommandType.Move, UnitIds = scared, X = spot.X, Y = spot.Y });
     }
 
-    private void PutIdleWorkersToWork(BotView view, List<CommandRequest> commands)
+    private void PutIdleWorkersToWork(BotView view, BotSettings s, List<CommandRequest> commands)
     {
         var safe = SafeDeposits(view);
         var cc = view.CommandCenter!;
 
         // Far ore is only worth walking to once a finished drop-off stands beside it (or if the depot is
         // clearly never coming), otherwise every load is carried all the way back home.
-        var depotOverdue = view.State.Tick - _expansionOrderTick > 150;
+        var depotOverdue = view.State.Tick - _expansionOrderTick > 150
+                          && (s.KeepCoops == 0 || !view.State.Resources.Any(r => Dist(r.X, r.Y, cc.X, cc.Y) <= 9));
         var usable = safe
             .Where(kv => !Threatened(view, kv.Value.X, kv.Value.Y))
             .Where(kv => Dist(kv.Value.X, kv.Value.Y, cc.X, cc.Y) <= 9
@@ -511,6 +515,82 @@ public class TunableBot(SettingsStore store, BattleControl control) : IBotStrate
             Console.WriteLine($"[tick {tick}] auto serum: {(ok ? "taken" : "not taken")} - {message}");
             if (ok) { _serumAttempts = 99; }
         });
+    }
+
+
+    // ---- Co-ops at every field ----
+
+    // Mining far ore without a drop-off close by wastes every trip. Two cases get a co-op right away, ahead of the
+    // barracks: a field where our workers are mining with none beside it, and a field whose co-op was destroyed.
+    private void KeepCoopsStanding(BotView view, BotSettings s, List<CommandRequest> commands, ref int budget)
+    {
+        var tick = view.State.Tick;
+        var cc = view.CommandCenter!;
+        foreach (var d in view.MyBuildings.Where(b => b.Type == BuildingType.ResourceDepot && b.Completed && Dist(b.X, b.Y, cc.X, cc.Y) > HomeRadius))
+        {
+            if (!_fieldCoops.Any(f => Dist(f.X, f.Y, d.X, d.Y) <= 4))
+            {
+                _fieldCoops.Add((d.X, d.Y));
+            }
+        }
+
+        if (s.KeepCoops == 0 || _farSite is not null || tick - _keeperTick < 60 || tick < 60)
+        {
+            return;
+        }
+
+        var drops = view.MyBuildings.Where(b => b.Type is BuildingType.CommandCenter or BuildingType.ResourceDepot).ToList();
+        bool Covered(int x, int y) => drops.Any(b => Dist(b.X, b.Y, x, y) <= 8) || _pendingSites.Keys.Any(k => Dist(k.X, k.Y, x, y) <= 8);
+
+        // (a) A field where workers are mining and nothing stands beside it.
+        (int X, int Y)? target = null;
+        var miners = view.Workers
+            .Where(w => w.TargetId is { } id && _knownDeposits.ContainsKey(id) && w.Activity is UnitActivity.Gathering or UnitActivity.Returning or UnitActivity.Moving)
+            .Select(w => _knownDeposits[w.TargetId!.Value])
+            .Where(p => Dist(p.X, p.Y, cc.X, cc.Y) > 9 && !Covered(p.X, p.Y))
+            .ToList();
+        if (miners.Count >= 2)
+        {
+            target = (miners[0].X, miners[0].Y);
+        }
+
+        // (b) A field where we had a co-op that no longer stands.
+        target ??= _fieldCoops.Where(f => !Covered(f.X, f.Y)).Select(f => ((int X, int Y)?)f).FirstOrDefault();
+        if (target is not { } t || Threatened(view, t.X, t.Y))
+        {
+            return;
+        }
+
+        var cost = view.Rules.Buildings.First(b => b.Type == BuildingType.ResourceDepot).Cost;
+        if (budget < cost)
+        {
+            budget -= cost;   // hold the ore: the co-op goes before the barracks or the army
+            return;
+        }
+
+        var site = FindSiteNear(view, t.X, t.Y);
+        if (site is null)
+        {
+            return;
+        }
+
+        var builder = view.Workers
+            .Where(w => w.Id != _explorerId)
+            .OrderBy(w => Dist(w.X, w.Y, site.Value.X, site.Value.Y))
+            .FirstOrDefault();
+        if (builder is null)
+        {
+            return;
+        }
+
+        Console.WriteLine($"[tick {tick}] co-op missing at the field near ({t.X},{t.Y}): worker {builder.Id} builds one at {site.Value}");
+        commands.Add(new CommandRequest { Type = CommandType.Build, UnitIds = [builder.Id], BuildingType = BuildingType.ResourceDepot, X = site.Value.X, Y = site.Value.Y });
+        _crewIds = view.Workers.Where(w => Dist(w.X, w.Y, site.Value.X, site.Value.Y) <= 10).Select(w => w.Id).ToHashSet();
+        _farSite = site.Value;
+        _farSiteTick = tick;
+        _farBuilderId = builder.Id;
+        _keeperTick = tick;
+        budget -= cost;
     }
 
     // ---- Early pioneers ----
